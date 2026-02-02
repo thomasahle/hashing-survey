@@ -1,0 +1,332 @@
+%=============================================================================
+\section{CLMUL and Polynomial Hashes}
+\label{sec:clmul}
+%=============================================================================
+
+These hashes use carry-less multiplication (CLMUL) or polynomial arithmetic
+over finite fields to achieve theoretically grounded collision bounds.
+
+\paragraph{Carry-less vs.\ standard multiplication.}
+In standard multiplication, partial products are added with carry propagation.
+In carry-less multiplication (polynomial multiplication over $\mathrm{GF}(2)$),
+partial products are XORed without carries:
+
+\begin{center}
+\begin{tikzpicture}[
+    >=Latex,
+    bit/.style={minimum width=0.4cm, minimum height=0.4cm, font=\scriptsize},
+    label/.style={font=\small}
+]
+% Standard multiplication example: 1011 × 1101
+\begin{scope}[shift={(-3.5,0)}]
+    \node[label] at (0.8,1.8) {\textbf{Standard (with carry)}};
+    \node[bit] at (0,1) {1}; \node[bit] at (0.4,1) {0}; \node[bit] at (0.8,1) {1}; \node[bit] at (1.2,1) {1};
+    \node[bit] at (-0.4,1) {$\times$};
+    \node[bit] at (0,0.6) {1}; \node[bit] at (0.4,0.6) {1}; \node[bit] at (0.8,0.6) {0}; \node[bit] at (1.2,0.6) {1};
+    \draw (-0.2,0.35) -- (1.4,0.35);
+    \node[font=\scriptsize, right] at (1.6,0) {partial products};
+    \node[font=\scriptsize, right] at (1.6,-0.4) {added with carry};
+    \draw (-0.2,-0.65) -- (1.4,-0.65);
+    \node[font=\scriptsize] at (0.6,-1) {$= 143$ (8 bits)};
+\end{scope}
+
+% Carry-less multiplication
+\begin{scope}[shift={(3.5,0)}]
+    \node[label] at (0.8,1.8) {\textbf{Carry-less (XOR)}};
+    \node[bit] at (0,1) {1}; \node[bit] at (0.4,1) {0}; \node[bit] at (0.8,1) {1}; \node[bit] at (1.2,1) {1};
+    \node[bit] at (-0.4,1) {$\otimes$};
+    \node[bit] at (0,0.6) {1}; \node[bit] at (0.4,0.6) {1}; \node[bit] at (0.8,0.6) {0}; \node[bit] at (1.2,0.6) {1};
+    \draw (-0.2,0.35) -- (1.4,0.35);
+    \node[font=\scriptsize, right] at (1.6,0) {partial products};
+    \node[font=\scriptsize, right] at (1.6,-0.4) {XORed (no carry)};
+    \draw (-0.2,-0.65) -- (1.4,-0.65);
+    \node[font=\scriptsize] at (0.6,-1) {$= 127$ (7 bits)};
+\end{scope}
+\end{tikzpicture}
+\end{center}
+
+\noindent
+The PCLMULQDQ instruction performs 64$\times$64$\to$128 carry-less multiplication
+in a single cycle on modern CPUs.
+
+\paragraph{Pseudocode primitives.}
+\label{sec:clmul-primitives}
+\begin{align}
+\Clmul(a, b) &= a \otimes b \quad\text{(128-bit carry-less product of two 64-bit inputs)}
+\end{align}
+Both map to a single \texttt{PCLMULQDQ} instruction with $\sim$1~cycle throughput.
+The symbol $\otimes$ denotes polynomial multiplication in $\mathrm{GF}(2)[x]$ (XOR replaces addition, AND replaces multiplication of coefficients).
+
+\subsection{CLHash}
+\label{sec:clhash}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/clhash.cpp}{\texttt{hashes/clhash.cpp}}~\cite{clhash}.
+
+\paragraph{SMHasher3 test results.}
+CLHash fails 186 of 250 tests, the worst result of any hash in this survey.
+Failures span nearly every category: Avalanche, BIC, Sparse, Permutation, Text,
+TwoBytes, PerlinNoise, Bitflip, and extensive seed-related tests.
+Many seed-test failures are expected: CLHash is a keyed hash designed for a full random
+key, and SMHasher3's seed-sensitivity tests probe a regime outside its design model.
+The non-seed failures (Avalanche, Sparse, Text) indicate that the CLMUL-based
+compression without a strong finalizer leaves detectable bias in the output.
+
+A theoretically-grounded hash by Daniel Lemire using carry-less multiplication (CLMUL instruction,
+x86-64 Haswell+). Based on almost-universal hashing over $\mathrm{GF}(2^{127})$ with collision
+bound $\epsilon \approx n/2^{64}$. Uses 133 random 64-bit keys derived from seed.
+
+\subsubsection{Mathematical Foundation}
+
+CLHash computes a polynomial hash over $\mathrm{GF}(2^{127})$ with irreducible polynomial $p(x) = x^{127} + x + 1$. (Irreducibility over $\mathrm{GF}(2^{128})$ ensures the field structure.)
+The core operation is carry-less multiplication:
+\begin{equation}
+a \otimes b = a \cdot b \mod p(x)
+\end{equation}
+where $\cdot$ denotes polynomial multiplication in $\mathrm{GF}(2)[x]$ (XOR instead of addition, AND instead of multiplication for coefficients).
+
+\subsubsection{Key Primitives}
+
+\paragraph{\texorpdfstring{Lazy mod $2^{127} + 2 + 1$:}{Lazy mod 2\string^127 + 2 + 1:}}
+Given 254-bit product $(A_{\text{hi}}, A_{\text{lo}})$:
+\begin{equation}
+A_{\text{lo}} \oplus (A_{\text{hi}} \ll 1) \oplus (A_{\text{hi}} \ll 2)
+\end{equation}
+
+\paragraph{128-to-64 reduction:}
+Uses the irreducible polynomial $p(x) = x^{64} + x^4 + x^3 + x + 1$ (notation: $(64, 4, 3, 1, 0)$).
+The reduction is performed in two steps:
+
+\textbf{Step 1: CLMUL reduction.}
+Let $C = x^4 + x^3 + x + 1$ (the low-degree terms of $p(x)$). Since $x^{64} \equiv C \pmod{p(x)}$,
+we have $A_{\text{hi}} \cdot x^{64} \equiv A_{\text{hi}} \cdot C$:
+\begin{equation}
+Q_2 \gets \Clmul(A_{\text{hi}}, C)
+\end{equation}
+This produces a result up to $64 + 4 = 68$ bits (since $A_{\text{hi}}$ is 64 bits and $C$ is degree 4).
+
+\textbf{Step 2: Table lookup for final bits.}
+The CLMUL result $Q_2$ may have bits in positions 64--67. These are reduced using
+a precomputed 16-entry table where entry $i$ contains $i \cdot C \bmod 2^{64}$:
+\begin{center}
+\begin{tabular}{c cccccccc}
+\toprule
+$i$ & 0 & 1 & 2 & 3 & 4 & 5 & 6 & 7 \\
+$i \cdot C$ & 0 & 27 & 54 & 45 & 108 & 119 & 90 & 65 \\
+\midrule
+$i$ & 8 & 9 & 10 & 11 & 12 & 13 & 14 & 15 \\
+$i \cdot C$ & 216 & 195 & 238 & 245 & 180 & 175 & 130 & 153 \\
+\bottomrule
+\end{tabular}
+\end{center}
+The high 4 bits of $Q_2$ (bits 64--67) index into this table via \texttt{pshufb}:
+\begin{equation}
+Q_3 \gets \mathit{table}[(Q_2 \gg 64) \land \texttt{0xF}]
+\end{equation}
+
+\textbf{Final combination:}\phantomsection\label{fn:precomp-reduction64}
+\begin{equation}
+\textsc{precompReduction64}(A) = A_{\text{lo}} \oplus Q_2 \oplus Q_3
+\end{equation}
+The table lookup replaces what would otherwise require another CLMUL for the
+overflow bits, saving one instruction in the critical path.
+
+\subsubsection{CLHash Algorithm}
+
+\begin{algorithmic}[1]
+\State Generate 133 random 64-bit key words $s_0, \ldots, s_{132}$ from seed using xorshift128+
+\State $s_{\mathrm{poly}} \gets (s_{128} \mid s_{129} \ll 64) \land (\texttt{0x3FFFFFFF\,FFFFFFFF\,FFFFFFFF\,FFFFFFFF})$ \Comment{128-bit; top 2 bits cleared for $\mathrm{GF}(2^{127})$}
+\State $s_{\mathrm{final}} \gets (s_{130}, s_{131}) \in \ut{128}$; \quad $s_{\mathrm{len}} \gets s_{132} \in \ut{64}$
+\State $v \gets 0$ (128-bit)
+\For{each block $(x_i)_{i=0}^{127} \in \ut{64}^{128}$} \Comment{1024 bytes; Horner: $v \gets v \otimes s_{\mathrm{poly}} \oplus h_i$}
+    \If{not first block}
+        \State $v \gets v \otimes s_{\mathrm{poly}}$
+    \EndIf
+    \For{$i \in \{0, \ldots, 63\}$} \Comment{64 word pairs}
+        \State $v \gets v \oplus \Clmul((x_{2i} \oplus s_{2i}), (x_{2i+1} \oplus s_{2i+1}))$
+    \EndFor
+\EndFor
+\For{remaining word pairs $(x_{2i}, x_{2i+1})$} \Comment{Tail: same CLMUL pattern}
+    \State $v \gets v \oplus \Clmul((x_{2i} \oplus s_{2i}), (x_{2i+1} \oplus s_{2i+1}))$
+\EndFor
+\State $t \gets v \oplus s_{\mathrm{final}}$; \quad $v \gets \Clmul(\textsc{Lo}(t),\, \textsc{Hi}(t))$
+\State $v \gets v \oplus \Clmul(s_{\mathrm{len}}, n)$ \Comment{Mix in length}
+\State \Return $\hyperref[fn:precomp-reduction64]{\textsc{precompReduction64}}(v)$ \Comment{bitmix variant applies MurmurHash3 $\Fmix$ after}
+\end{algorithmic}
+
+\subsection{UMASH}
+\label{sec:umash}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/umash.cpp}{\texttt{hashes/umash.cpp}}~\cite{umash}.
+
+\paragraph{SMHasher3 test results.}
+UMASH-128 fails 128 of 250 tests.
+Like CLHash, UMASH is a keyed hash expecting a full random key (generated via Salsa20),
+and most failures are in seed-related tests (Seed, SeedSparse, SeedAvalanche, SeedBIC,
+SeedBitflip, SeedBlockLen, SeedBlockOffset).
+Non-seed failures include BIC, some Sparse configurations, Permutation (single-bit keys),
+TwoBytes, PerlinNoise, and Bitflip---reflecting the inherent linearity of
+CLMUL-based compression.
+
+UMASH by Paul Khuong combines CLMUL-based compression with polynomial hashing
+over $\mathrm{GF}(2^{61}-1)$. It produces two independent hash functions for
+fingerprinting (128-bit output).
+
+\subsubsection{Mathematical Foundation}
+
+UMASH works modulo the Mersenne prime $p = 2^{61} - 1$. Key operations:
+
+\paragraph{Modular addition (fast):}
+\begin{equation}
+\textsc{add\_mod\_fast}(x, y) = \begin{cases}
+x + y + 8 & \text{if } x + y \text{ overflows} \\
+x + y & \text{otherwise}
+\end{cases}
+\end{equation}
+
+\paragraph{Modular multiplication:}
+\begin{equation}
+\textsc{mul\_mod\_fast}(m, x) = \textsc{add\_mod\_fast}(\textsc{Lo}(m \times x), 8 \cdot \textsc{Hi}(m \times x))
+\end{equation}
+
+\paragraph{Horner double update:}\phantomsection\label{fn:horner-double-update}
+\begin{equation}
+\begin{aligned}
+\textsc{horner\_double\_update}(v, m_0, m_1, x, y) &=
+\textsc{mul\_mod\_fast}(m_0, v + x) \\
+&\quad + \textsc{mul\_mod\_fast}(m_1, y)
+\end{aligned}
+\end{equation}
+
+\subsubsection{OH Compression}
+
+The ``OH'' (One-pass Hash) compresses 256-byte blocks using CLMUL:
+
+\phantomsection\label{fn:oh-compress}%
+\begin{algorithmic}[1]
+\State Interpret the 256-byte input as $(x_i)_{i=0}^{31} \in \ut{64}^{32}$
+\State $v \gets 0$ (128-bit)
+\For{$i \in \{0, \ldots, 14\}$} \Comment{15 CLMUL pairs}
+    \State $v \gets v \oplus \Clmul(x_{2i} \oplus s_{2i}, x_{2i+1} \oplus s_{2i+1})$
+\EndFor
+\State \textbf{ENH finalization:}
+\State $(t_0, t_1) \gets (x_{30} + s_{30},\, x_{31} + s_{31})$ \Comment{Final ENH chunk}
+\State $t_2 \gets \textsc{Hi}(t_0 \times t_1) + \mathit{seed}$; $t_3 \gets \textsc{Lo}(t_0 \times t_1)$
+\State \Return $(v_{\text{lo}} \oplus t_3,\, v_{\text{hi}} \oplus t_2 \oplus t_3)$
+\end{algorithmic}
+
+\subsubsection{UMASH Algorithm}
+
+\noindent We focus on the main (long-key) structure. Short-key special casing and exact tail handling are summarized.
+
+\begin{algorithmic}[1]
+\State Generate 34 random 64-bit key words $s_0, \ldots, s_{33}$ from seed via Salsa20
+\State Prepare polynomial multipliers $f, f^2$ in $\mathrm{GF}(2^{61}-1)$
+\State $v \gets 0$
+\For{each block $(x_i)_{i=0}^{31} \in \ut{64}^{32}$} \Comment{Main loop (256 bytes)}
+    \State $(t_0, t_1) \gets \hyperref[fn:oh-compress]{\textsc{OH\_compress}}((x_i)_{i=0}^{31})$
+    \State $v \gets \hyperref[fn:horner-double-update]{\textsc{horner\_double\_update}}(v, f^2, f, t_0, t_1)$
+\EndFor
+\State Process remaining bytes with variable-length OH (tail summarized)
+\State \Return $(v \oplus \Rot{8}{v}) \oplus \Rot{33}{v}$ \Comment{Finalization}
+\end{algorithmic}
+
+\subsubsection{Fingerprinting (128-bit)}
+
+For fingerprinting, UMASH computes two independent hashes using:
+\begin{itemize}
+\item Different polynomial multipliers $(f_0, f_0^2)$ and $(f_1, f_1^2)$
+\item A ``twisted'' version using an LRC (longitudinal redundancy check) XOR~\cite{umash-twist}
+\item Both hashes use the same OH keys but different polynomial accumulators
+\end{itemize}
+
+\subsection{Polymur}
+\label{sec:polymur}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/polymur.cpp}{\texttt{hashes/polymur.cpp}}~\cite{polymur}.
+
+Polymur by Orson Peters is a polynomial hash over $\mathrm{GF}(2^{61}-1)$. Uses 56-bit
+chunks to avoid reduction within chunk processing. The polynomial multiplier $s_0$ is chosen as a generator of the
+multiplicative group (via $s_0 = 37^e$ for random odd $e$ coprime to $2^{61}-2$), with
+$s_0^7 < 2^{60} - 2^{56}$ ensuring efficient reduction.
+
+\begin{algorithmic}[1]
+\State Keys: $(s_0, s_1) \gets$ secret parameters derived from seed \Comment{$s_0$ multiplier, $s_1$ tweak}
+\State $v \gets 0$
+\If{$n \leq 7$}
+		    \State \Return $s_1 + (s_0 + x_0)(s_0^2 + n) \mod p$
+\ElsIf{$n \geq 50$}
+		    \While{$n \geq 50$} \Comment{Main loop: 7$\times$56-bit chunks per iteration}
+		        \State Let $(x_0, \ldots, x_6)$ be the next 7 words (each 56 bits, zero-extended)
+		        \State $t_0 \gets (s_0 + x_0)(s_0^6 + x_1)$
+		        \State $t_1 \gets (s_0^2 + x_2)(s_0^5 + x_3)$
+	        \State $t_2 \gets (s_0^3 + x_4)(s_0^4 + x_5)$
+	        \State $t_3 \gets (v + x_6) \cdot s_0^7$
+	        \State $v \gets (t_0 + t_1 + t_2 + t_3) \mod p$
+	    \EndWhile
+		    \State Finalize with $v \cdot s_0^{14}$
+\EndIf
+\State Handle tail (8--49 bytes) with overlapping reads
+\State $s_2 \gets \texttt{0xe9846af9b1a615d}$ \Comment{mx3 finalizer}
+\State $v \gets \Xorshift{32}(v) \cdot s_2$
+\State $v \gets \Xorshift{32}(v) \cdot s_2$
+\State $v \gets \Xorshift{28}(v)$
+\State \Return $v + s_1$
+\end{algorithmic}
+
+\subsection{poly-mersenne}
+\label{sec:poly-mersenne}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/poly_mersenne.cpp}{\texttt{hashes/poly\_mersenne.cpp}}~\cite{poly-mersenne}.
+
+A simple polynomial hash over the Mersenne prime $p = 2^{61}-1$. Outputs 32 bits.
+Keys from SplitMix64: multiplier $s_0 < 2^{60}$ and random values $s_1, \ldots, s_{K+1}$ for
+optional $K$-independence.
+
+\paragraph{Core primitive.}\phantomsection\label{fn:mult-combine61}
+The multiply-accumulate uses \emph{lazy Mersenne reduction}: since $2^{61} \equiv 1 \pmod{p}$,
+a 128-bit product can be reduced by folding the bits above position~61 back into the low part
+with a shift and add---no division required.
+
+\begin{algorithmic}[1]
+\Function{mult\_combine61}{$v, m, x$} \Comment{$(v \cdot m + x) \bmod (2^{61}-1)$}
+    \State $(\mathit{lo}, \mathit{hi}) \gets v \times m$ \Comment{Full 128-bit product}
+    \State $\mathit{lo} \gets \mathit{lo} + x$ \Comment{Accumulate input word}
+    \State $t \gets (\mathit{hi} \ll 3) \mid (\mathit{lo} \gg 61)$ \Comment{Bits $\geq 2^{61}$: fold back}
+    \State $\mathit{lo} \gets \mathit{lo} \land (2^{61}-1)$
+    \State \Return $\mathit{lo} + t$ \Comment{Lazy: may exceed $p$ by at most 1}
+\EndFunction
+\end{algorithmic}
+
+\noindent The final result is fully reduced ($v \gets v - p$ if $v \geq p$) once, after all rounds.
+
+\begin{algorithmic}[1]
+\State $v \gets n$ \Comment{Initialize with length}
+\For{each word $x \in \ut{32}$}
+    \State $v \gets \hyperref[fn:mult-combine61]{\textsc{mult\_combine61}}(v, s_0, x)$
+\EndFor
+\If{$K > 0$} \Comment{Optional $K$-independence transform}
+    \State $t \gets v$; $v \gets s_1$
+    \For{$i \in \{2, \ldots, K+1\}$}: $v \gets \hyperref[fn:mult-combine61]{\textsc{mult\_combine61}}(v, t, s_i)$
+    \EndFor
+\EndIf
+\State \Return $v \bmod 2^{32}$ \Comment{After final reduction if $v \geq p$}
+\end{algorithmic}
+
+\noindent Variants with higher $K$ provide $K$-wise independence (collision bound $(n/2^{61})^{K+1}$):
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+Variant & $K$ & Collision bound \\
+\midrule
+poly-mersenne-deg0 & 0 & $n / 2^{61}$ \\
+poly-mersenne-deg1 & 1 & $(n / 2^{61})^2$ \\
+poly-mersenne-deg2 & 2 & $(n / 2^{61})^3$ \\
+poly-mersenne-deg3 & 3 & $(n / 2^{61})^4$ \\
+poly-mersenne-deg4 & 4 & $(n / 2^{61})^5$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Higher-degree variants provide $K$-wise independence at the cost of additional
+multiplications, improving theoretical collision bounds.

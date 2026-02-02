@@ -1,0 +1,370 @@
+%=============================================================================
+\section{AES-Based Hashes}
+\label{sec:aes}
+%=============================================================================
+
+These hashes leverage the AES-NI instructions (\texttt{aesenc}, \texttt{aesdec})
+for fast mixing. AES provides excellent diffusion in a single instruction.
+
+\paragraph{AES round structure.}
+Each \texttt{aesenc} instruction applies three transformations to a 128-bit state,
+then XORs a round key:
+
+\begin{center}
+\begin{tikzpicture}[
+    >=Latex,
+    box/.style={rectangle, draw, rounded corners, minimum width=2.1cm, minimum height=0.7cm, font=\scriptsize, fill=gray!10},
+    state/.style={rectangle, draw, rounded corners, minimum width=1.7cm, minimum height=0.7cm, font=\scriptsize, fill=yellow!15},
+    key/.style={rectangle, draw, rounded corners, minimum width=1.7cm, minimum height=0.55cm, font=\scriptsize, fill=blue!12},
+    arrow/.style={->, thick}
+]
+\node[state] (in) at (-2.2,0) {state};
+\node[box] (sb) at (0,0) {SubBytes};
+\node[box] (sr) at (2.7,0) {ShiftRows};
+\node[box] (mc) at (5.4,0) {MixColumns};
+\node[box, fill=green!15] (xor) at (8.1,0) {$\oplus$ round key};
+\node[state] (out) at (10.6,0) {state$'$};
+
+\node[key] (rk) at (8.1,1.2) {key};
+\draw[arrow] (rk) -- (xor);
+
+\draw[arrow] (in) -- (sb);
+\draw[arrow] (sb) -- (sr);
+\draw[arrow] (sr) -- (mc);
+\draw[arrow] (mc) -- (xor);
+\draw[arrow] (xor) -- (out);
+
+\node[font=\footnotesize] at (4.2,-1.0) {\texttt{aesenc(state, key)}};
+\end{tikzpicture}
+\end{center}
+
+\paragraph{State transformations.}
+The AES state is a 4$\times$4 matrix of bytes. ShiftRows and MixColumns provide
+diffusion across the entire state:
+
+\begin{center}
+\begin{tikzpicture}[
+    >=Latex,
+    scale=0.8,
+    cell/.style={rectangle, draw, minimum width=0.5cm, minimum height=0.5cm, font=\tiny},
+    label/.style={font=\scriptsize}
+]
+% === ShiftRows ===
+\node[label, font=\footnotesize\bfseries] at (1.5, 2) {ShiftRows};
+
+% Input state
+\foreach \row in {0,...,3} {
+    \foreach \col in {0,...,3} {
+        \pgfmathtruncatemacro{\idx}{\row*4+\col}
+        \node[cell, fill=gray!\the\numexpr20+\row*15\relax] (in\row\col) at (\col*0.55, -\row*0.55) {\idx};
+    }
+}
+% Row labels
+\node[label, anchor=east] at (-0.3, 0) {row 0};
+\node[label, anchor=east] at (-0.3, -0.55) {row 1};
+\node[label, anchor=east] at (-0.3, -1.1) {row 2};
+\node[label, anchor=east] at (-0.3, -1.65) {row 3};
+
+% Arrow
+\draw[->, thick] (2.5, -0.8) -- (3.5, -0.8);
+\node[label, above] at (3, -0.8) {shift};
+
+% Output state (shifted)
+\foreach \row/\shift/\shade in {0/0/20, 1/1/35, 2/2/50, 3/3/65} {
+    \foreach \col in {0,...,3} {
+        \pgfmathtruncatemacro{\idx}{\row*4+\col}
+        \pgfmathtruncatemacro{\newcol}{mod(\col+4-\shift,4)}
+        \node[cell, fill=gray!\shade] at (4+\newcol*0.55, -\row*0.55) {\idx};
+    }
+}
+
+% Shift amounts
+\node[label] at (6.2, 0) {$\leftarrow 0$};
+\node[label] at (6.2, -0.55) {$\leftarrow 1$};
+\node[label] at (6.2, -1.1) {$\leftarrow 2$};
+\node[label] at (6.2, -1.65) {$\leftarrow 3$};
+
+% === MixColumns ===
+\node[label, font=\footnotesize\bfseries] at (10, 2) {MixColumns};
+
+% Input column
+\node[cell, fill=blue!30] (mc0) at (8.5, 0) {$a$};
+\node[cell, fill=blue!30] (mc1) at (8.5, -0.55) {$b$};
+\node[cell, fill=blue!30] (mc2) at (8.5, -1.1) {$c$};
+\node[cell, fill=blue!30] (mc3) at (8.5, -1.65) {$d$};
+
+% Matrix multiply symbol
+\node[label] at (9.3, -0.8) {$\times$};
+
+% Matrix
+\node[label, align=center] at (10.3, -0.8) {$\begin{bmatrix} 2 & 3 & 1 & 1 \\ 1 & 2 & 3 & 1 \\ 1 & 1 & 2 & 3 \\ 3 & 1 & 1 & 2 \end{bmatrix}$};
+\node[label] at (10.3, -2.25) {$\mathrm{GF}(2^8)$};
+
+% Arrow
+\draw[->, thick] (11.5, -0.8) -- (12.3, -0.8);
+
+% Output column
+\node[cell, fill=green!30] (out0) at (12.8, 0) {$a'$};
+\node[cell, fill=green!30] (out1) at (12.8, -0.55) {$b'$};
+\node[cell, fill=green!30] (out2) at (12.8, -1.1) {$c'$};
+\node[cell, fill=green!30] (out3) at (12.8, -1.65) {$d'$};
+
+% Explanation
+\node[label, align=left, anchor=west] at (0, -2.8) {Each column mixed independently};
+\node[label, align=left, anchor=west] at (8, -2.8) {Every output byte depends on all 4 input bytes};
+\end{tikzpicture}
+\end{center}
+
+\noindent
+\textbf{SubBytes}: Non-linear S-box substitution (each byte independently).
+\textbf{ShiftRows}: Rotates each row by different amounts (0, 1, 2, 3 positions left).
+\textbf{MixColumns}: Multiplies each 4-byte column by a fixed matrix in $\mathrm{GF}(2^8)$.
+After one round, each output bit depends on multiple input bits---full avalanche
+requires $\sim$2 rounds.
+
+\paragraph{Pseudocode primitives.}
+\label{sec:aes-primitives}
+We use $\Aesenc$ and $\Aesdec$ as 128-bit $\to$ 128-bit operations throughout:
+\begin{align}
+\Aesenc(v, k) &= \textsc{MixColumns}(\textsc{ShiftRows}(\textsc{SubBytes}(v))) \oplus k \\
+\Aesdec(v, k) &= \textsc{InvMixColumns}(\textsc{InvShiftRows}(\textsc{InvSubBytes}(v))) \oplus k
+\end{align}
+Each maps to a single x86 instruction (AESENC / AESDEC) with $\sim$1~cycle throughput
+and $\sim$4~cycle latency on modern CPUs.
+
+\subsection{AquaHash}
+\label{sec:aquahash}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/aquahash.cpp}{\texttt{hashes/aquahash.cpp}}~\cite{aquahash}.
+
+\paragraph{SMHasher3 test results.}
+AquaHash fails 55 of 250 tests.
+The main weaknesses are in Sparse tests (18 configurations, including long-key
+variants up to 2048 bytes), Permutation (single-bit keys), and several Text patterns.
+Some seed-related failures (SeedSparse, SeedBlockLen, Seed) also appear.
+
+AquaHash by J. Andrew Rogers uses \texttt{aesenc} for mixing with 4 parallel
+128-bit lanes (512-bit state).
+We denote the fixed 128-bit constants used by the reference implementation as $s_0,\ldots,s_4$; $s_4$ is used in the final AES round.
+
+\begin{center}
+\begin{tikzpicture}[
+    >=Latex,
+    lane/.style={rectangle, draw, rounded corners, minimum width=1.2cm, minimum height=0.55cm, font=\scriptsize},
+    inlane/.style={lane, fill=yellow!18},
+    aes/.style={rectangle, draw, rounded corners, minimum width=1.2cm, minimum height=0.5cm, font=\scriptsize, fill=green!15},
+    op/.style={circle, draw, minimum size=0.42cm, font=\scriptsize}
+]
+% Lane x-positions
+\def\dx{1.7}
+
+% --- Main loop (per 64-byte block) ---
+\node[font=\footnotesize, anchor=east] at (-0.7, 0.0) {Block:};
+\node[font=\footnotesize, anchor=east] at (-0.7, -0.9) {State:};
+\node[font=\footnotesize, anchor=east] at (-0.7, -2.7) {State:};
+
+\foreach \i in {0,...,3} {
+    \pgfmathsetmacro{\x}{\i*\dx}
+    \node[inlane] (x\i) at (\x, 0.0) {$x_{\i}$};
+    \node[lane] (v\i) at (\x, -0.9) {$v_{\i}$};
+    \node[aes] (aes\i) at (\x, -1.8) {\Aesenc};
+    \node[lane] (vp\i) at (\x, -2.7) {$v'_{\i}$};
+    \draw[->] (x\i) -- (aes\i);
+    \draw[->] (v\i) -- (aes\i);
+    \draw[->] (aes\i) -- (vp\i);
+}
+\draw[decorate, decoration={brace, amplitude=5pt}] (6.0, 0.4) -- (6.0, -3.1)
+    node[midway, xshift=0.9cm, font=\footnotesize] {repeat for each 64B block};
+
+% --- Lane mix: t = XOR of lanes, then aesenc(v_i, t) ---
+\node[op] (xor01) at (0.85, -3.9) {$\oplus$};
+\node[op] (xor23) at (3.55, -3.9) {$\oplus$};
+\node[op] (xorAll) at (2.2, -4.7) {$\oplus$};
+\draw[->] (vp0) -- (xor01);
+\draw[->] (vp1) -- (xor01);
+\draw[->] (vp2) -- (xor23);
+\draw[->] (vp3) -- (xor23);
+\draw[->] (xor01) -- (xorAll);
+\draw[->] (xor23) -- (xorAll);
+\node[lane, fill=blue!10] (t) at (2.2, -5.6) {$t = v_0' \oplus v_1' \oplus v_2' \oplus v_3'$};
+\draw[->] (xorAll) -- (t);
+
+\node[font=\footnotesize, anchor=east] at (-0.7, -7.1) {State:};
+\foreach \i in {0,...,3} {
+    \pgfmathsetmacro{\x}{\i*\dx}
+    \node[aes] (aesMix\i) at (\x, -6.7) {\Aesenc};
+    \node[lane] (vs\i) at (\x, -7.6) {$v^*_{\i}$};
+    \draw[->] (vp\i) -- ++(0,-0.25) -| (aesMix\i);
+    \draw[->] (t) -- ++(0,-0.35) -| (aesMix\i);
+    \draw[->] (aesMix\i) -- (vs\i);
+}
+
+% --- Reduction to one 128-bit output ---
+\node[aes] (r01) at (0.85, -8.9) {\Aesenc};
+\node[aes] (r23) at (3.55, -8.9) {\Aesenc};
+\draw[->] (vs0) -- (r01);
+\draw[->] (vs1) -- (r01);
+\draw[->] (vs2) -- (r23);
+\draw[->] (vs3) -- (r23);
+\node[aes] (r0123) at (2.2, -9.9) {\Aesenc};
+\draw[->] (r01) -- (r0123);
+\draw[->] (r23) -- (r0123);
+\node[aes] (final) at (2.2, -10.9) {\Aesenc};
+\node[inlane] (sf) at (4.9, -10.9) {$s_4$};
+\draw[->] (sf) -- (final);
+\draw[->] (r0123) -- (final);
+\node[lane, fill=blue!10] (out) at (2.2, -11.8) {$h$};
+\draw[->] (final) -- (out);
+\end{tikzpicture}
+\end{center}
+
+\paragraph{Short keys ($n < 64$):} Uses 2 parallel lanes with \Aesenc, combining via $\Aesenc(v_0, v_1)$ before a 3-round finalization.
+
+\paragraph{Long keys ($n \geq 64$).}
+
+\begin{algorithmic}[1]
+\State $(v_0, v_1, v_2, v_3) \gets (\mathit{seed} \oplus s_0, \mathit{seed} \oplus s_1, \mathit{seed} \oplus s_2, \mathit{seed} \oplus s_3)$
+\For{each block $(x_0, x_1, x_2, x_3)\in \ut{128}^4$} \Comment{64 bytes}
+    \For{$i \in \{0,\ldots,3\}$}
+        \State $v_i \gets \Aesenc(v_i, x_i)$
+    \EndFor
+\EndFor
+\State Process remaining 32, 16, 8, 4, 2, 1 bytes
+\State $t \gets v_0 \oplus v_1 \oplus v_2 \oplus v_3$
+\For{$i \in \{0,\ldots,3\}$}
+    \State $v_i \gets \Aesenc(v_i, t)$
+\EndFor
+\State $v \gets \Aesenc(\Aesenc(v_0, v_1), \Aesenc(v_2, v_3))$
+\State \Return $\Aesenc(v, s_4)$
+\end{algorithmic}
+
+\subsection{MeowHash}
+\label{sec:meowhash}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/meowhash.cpp}{\texttt{hashes/meowhash.cpp}}, version 0.5/calico~\cite{meowhash}.
+
+MeowHash by Casey Muratori (Molly Rocket) uses 8 parallel 128-bit lanes (1024-bit state)
+with \texttt{aesdec} for mixing. Processes 256-byte blocks matching cache line boundaries.
+High throughput by saturating AES execution units; for inputs $> 256$KB, explicit prefetch
+improves performance.
+
+\begin{center}
+\begin{tikzpicture}[
+    >=Latex,
+    lane/.style={rectangle, draw, minimum width=0.6cm, minimum height=0.5cm, font=\scriptsize},
+    op/.style={circle, draw, minimum size=0.35cm, font=\scriptsize}
+]
+% 8 lanes
+\foreach \i in {0,...,7} {
+    \node[lane] (x\i) at (\i*0.9, 0) {$v_\i$};
+}
+\node[font=\footnotesize, anchor=east] at (-0.3, 0) {Lanes:};
+
+% Final combination tree
+% Level 1: additions
+\node[op] (a02) at (0.45, -1) {$+$};
+\node[op] (a13) at (2.25, -1) {$+$};
+\node[op] (a46) at (4.05, -1) {$+$};
+\node[op] (a57) at (5.85, -1) {$+$};
+
+\draw[->] (x0) -- (a02);
+\draw[->] (x2) -- (a02);
+\draw[->] (x1) -- (a13);
+\draw[->] (x3) -- (a13);
+\draw[->] (x4) -- (a46);
+\draw[->] (x6) -- (a46);
+\draw[->] (x5) -- (a57);
+\draw[->] (x7) -- (a57);
+
+% Level 2: XORs
+\node[op] (xor1) at (1.35, -2) {$\oplus$};
+\node[op] (xor2) at (4.95, -2) {$\oplus$};
+
+\draw[->] (a02) -- (xor1);
+\draw[->] (a13) -- (xor1);
+\draw[->] (a46) -- (xor2);
+\draw[->] (a57) -- (xor2);
+
+% Level 3: final add
+\node[op] (final) at (3.15, -3) {$+$};
+\draw[->] (xor1) -- (final);
+\draw[->] (xor2) -- (final);
+
+% Output
+\node[lane, fill=blue!10] (out) at (3.15, -4) {$h$};
+\draw[->] (final) -- (out);
+
+\node[font=\footnotesize, anchor=west] at (6.5, -2) {Combine};
+\end{tikzpicture}
+\end{center}
+
+\noindent Default seed: 128 bytes from digits of $\pi$.
+All additions below are 64-bit lane-wise (\texttt{paddq}).
+
+\phantomsection\label{fn:meow-mix}%
+\phantomsection\label{fn:meow-shuffle}%
+\begin{algorithmic}[1]
+\Function{MEOW\_MIX}{$r_1, r_2, r_3, r_4, r_5, x_a, x_b$} \Comment{32 bytes into 5 lanes}
+    \State $r_1 \gets \Aesdec(r_1, r_2)$ \Comment{Source uses 4 overlapping 128-bit reads;}
+    \State $r_3 \gets r_3 + x_a$; \quad $r_2 \gets r_2 \oplus x_b$ \Comment{simplified to 2 blocks here}
+    \State $r_2 \gets \Aesdec(r_2, r_4)$
+    \State $r_5 \gets r_5 + x_a$; \quad $r_4 \gets r_4 \oplus x_b$
+\EndFunction
+\Function{MEOW\_SHUFFLE}{$r_1, r_2, r_3, r_4, r_5, r_6$} \Comment{Cross-lane mixing (no input)}
+    \State $r_1 \gets \Aesdec(r_1, r_4)$
+    \State $r_2 \gets r_2 + r_5$; \quad $r_4 \gets r_4 \oplus r_6$
+    \State $r_4 \gets \Aesdec(r_4, r_2)$
+    \State $r_5 \gets r_5 + r_6$
+\EndFunction
+\State
+\State Initialize 8 lanes $(v_0, \ldots, v_7)$ from 128-byte seed
+\For{each block $(x_i)_{i=0}^{15} \in \ut{128}^{16}$} \Comment{Main loop (256 bytes)}
+    \For{$i \in \{0,\ldots,7\}$} \Comment{32 bytes per iteration; touches 5 lanes}
+        \State $\hyperref[fn:meow-mix]{\textsc{MEOW\_MIX}}(v_i, v_{(i+4)\bmod 8}, v_{(i+6)\bmod 8}, v_{(i+1)\bmod 8}, v_{(i+2)\bmod 8}, x_{2i}, x_{2i+1})$
+    \EndFor
+\EndFor
+\State Load residual $< 32$ bytes with careful alignment handling
+\State Mix residual and length into lanes
+\State Process remaining 32-byte blocks (0--7)
+\State \textbf{MixDown:} Apply 12 \hyperref[fn:meow-shuffle]{\textsc{MEOW\_SHUFFLE}} operations
+\State Combine: $v_0 \gets ((v_0 + v_2) \oplus (v_1 + v_3)) + ((v_4 + v_6) \oplus (v_5 + v_7))$
+\State \Return $v_0$
+\end{algorithmic}
+
+\subsection{aHash}
+\label{sec:ahash}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/rust-ahash.cpp}{\texttt{hashes/rust-ahash.cpp}}~\cite{ahash}.
+
+By Tom Kaitchuck. Default hash in Rust's \texttt{HashMap}. Two variants: AES-based
+(2 parallel paths using \texttt{aesdec} + shuffle-add) and fallback (portable MUM-based,
+similar to wyhash). Uses variable-amount final rotation for additional mixing.
+
+\paragraph{AES Variant.}
+Uses \texttt{aesdec} with a special shuffle permutation (selected by automated search):
+\phantomsection\label{fn:ahash-shuffle}\textsc{Shuffle} is a fixed byte permutation of a 128-bit value (as in the implementation).
+\begin{algorithmic}[1]
+\State $(v_0, v_1) \gets$ state from random seed (derived from $\pi$)
+\State $t \gets v_0 \oplus v_1$ \Comment{Save initial combined state}
+\For{each block $x \in \ut{128}$}
+    \State $v_0 \gets \Aesdec(v_0, x)$
+    \State $v_1 \gets \hyperref[fn:ahash-shuffle]{\textsc{Shuffle}}(v_1) + x$
+\EndFor
+\State $v \gets \Aesenc(v_1, v_0)$
+\State \Return $\Aesdec(\Aesdec(v, t), v)$
+\end{algorithmic}
+
+\paragraph{Fallback Variant.}
+MUM-based, using Knuth's LCG multiplier $s_0 = 6364136223846793005$:
+
+\begin{algorithmic}[1]
+\State Initialize $v, s_1, s_2, s_3$ from random state
+\State $v \gets \Mum(v \oplus n,\, s_0)$
+\State $v \gets (v + n) \cdot s_0$
+\For{each block $(x_0, x_1)\in \ut{64}^2$} \Comment{16 bytes}
+    \State $t \gets \Mum(x_0 \oplus s_2,\, x_1 \oplus s_3)$
+    \State $v \gets (v + s_1) \oplus t$
+    \State $v \gets \Rot{23}{v}$
+\EndFor
+\State \Return $\Rot{v \bmod 64}{\Mum(v,\, s_1)}$
+\end{algorithmic}

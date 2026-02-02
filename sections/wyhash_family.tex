@@ -1,0 +1,173 @@
+%=============================================================================
+\section{The wyhash/rapidhash Family}
+%=============================================================================
+
+This family uses the MUM primitive as its core operation:
+\begin{equation}
+\Mum(a,\, b) = \textsc{Lo}(a \times b) \oplus \textsc{Hi}(a \times b)
+\end{equation}
+
+\subsection{Secrets}
+\label{sec:wyconst}
+
+Both families use 64-bit ``secret'' constants $s_0, s_1, \ldots$ for mixing.
+wyhash uses 4 secrets; rapidhash uses 8 (the first 4 shared with wyhash).
+
+\subsection{wyhash (64-bit)}
+\label{sec:wyhash}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/wyhash.cpp}{\texttt{hashes/wyhash.cpp}}~\cite{wyhash}.
+
+\paragraph{SMHasher3 test results.}
+wyhash fails 15 of 250 tests: Permutation tests with single-bit keys at all block sizes
+(4--16 bytes, both LE and BE), and SeedZeroes at 1280 and 8448 bytes.
+The Permutation failures reflect insufficient diffusion when only one bit of each input
+word is set.
+
+The main loop uses 3 scalar lanes (not 4 or 8) because \Mum{} relies on 64$\times$64$\to$128-bit
+scalar multiplication, which doesn't vectorize in SSE/AVX. The 3 independent dependency chains
+exploit ILP while keeping register pressure manageable.
+
+\begin{algorithmic}[1]
+\State $v_0 \gets \mathit{seed} \oplus \Mum(\mathit{seed} \oplus s_0,\, s_1)$
+\For{$i \in \{1,2\}$}
+    \State $v_i \gets v_0$
+\EndFor
+\For{each block $(x_0, \ldots, x_5)\in \ut{64}^6$} \Comment{Main loop: 3 parallel lanes}
+    \For{$i \in \{0,1,2\}$}
+        \State $v_i \gets \Mum(x_{2i} \oplus s_{i+1},\, x_{2i+1} \oplus v_i)$
+    \EndFor
+\EndFor
+\State $v_0 \gets v_0 \oplus v_1 \oplus v_2$ \Comment{Collapse lanes}
+\State Process remaining bytes; read last 16 bytes as $t_0, t_1$
+\State $t_0 \gets t_0 \oplus s_1$, \quad $t_1 \gets t_1 \oplus v_0$
+\State $(t_0, t_1) \gets (\textsc{Lo}(t_0 \times t_1), \textsc{Hi}(t_0 \times t_1))$
+\State \Return $\Mum(t_0 \oplus s_0 \oplus n,\, t_1 \oplus s_1)$
+\end{algorithmic}
+
+\subsection{rapidhash}
+\label{sec:rapidhash}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/rapidhash.cpp}{\texttt{hashes/rapidhash.cpp}}, version 3~\cite{rapidhash}.
+
+By Nicolas De Carli, based on wyhash. Uses 7 scalar ILP lanes (112-byte blocks), trading higher
+register pressure for more parallelism on wide superscalar CPUs. Uses $s_2$ for seed initialization
+and 8 secrets ($s_0$--$s_7$).
+
+The ``protected'' variant XORs the original inputs back into the MUM result:
+\begin{equation}
+\Mum_{128}^*(a, b) = (a \oplus \textsc{Lo}(a \times b), \; b \oplus \textsc{Hi}(a \times b))
+\end{equation}
+This prevents zero-multiplication weaknesses at a small performance cost.
+
+\begin{algorithmic}[1]
+\State $v_0 \gets \mathit{seed} \oplus \Mum(\mathit{seed} \oplus s_2,\, s_1)$ \Comment{Note: $s_2$ not $s_0$}
+\For{$i \in \{1,\ldots,6\}$}
+    \State $v_i \gets v_0$
+\EndFor
+\For{each block $(x_0, \ldots, x_{13})\in \ut{64}^{14}$} \Comment{Main loop: 7 parallel lanes}
+    \For{$i \in \{0,\ldots,6\}$}
+        \State $v_i \gets \Mum(x_{2i} \oplus s_i,\, x_{2i+1} \oplus v_i)$
+    \EndFor
+\EndFor
+\State $v_0 \gets v_0 \oplus v_1$; $v_2 \gets v_2 \oplus v_3$; $v_4 \gets v_4 \oplus v_5$ \Comment{Collapse lanes}
+\State $v_0 \gets v_0 \oplus v_6$; $v_2 \gets v_2 \oplus v_4$; $v_0 \gets v_0 \oplus v_2$
+\State Process remaining bytes; read last 16 bytes as $t_0, t_1$ with $t_0 \gets t_0 \oplus n$
+\State $t_0 \gets t_0 \oplus s_1$, \quad $t_1 \gets t_1 \oplus v_0$
+\State $(t_0, t_1) \gets (\textsc{Lo}(t_0 \times t_1), \textsc{Hi}(t_0 \times t_1))$
+\State \Return $\Mum(t_0 \oplus s_7,\, t_1 \oplus s_1 \oplus n)$ \Comment{Note: $s_7$ and extra $n$}
+\end{algorithmic}
+
+\paragraph{XOR-tree lane combination:}
+
+\begin{center}
+\begin{tikzpicture}[
+    node distance=0.6cm and 0.8cm,
+    xornode/.style={circle, draw, minimum size=0.5cm, inner sep=0pt, font=\scriptsize},
+    lanenode/.style={rectangle, draw, rounded corners, minimum width=0.8cm, minimum height=0.4cm, font=\scriptsize}
+]
+% Initial lanes
+\node[lanenode] (s0) {$v_0$};
+\node[lanenode, right=of s0] (s1) {$v_1$};
+\node[lanenode, right=of s1] (s2) {$v_2$};
+\node[lanenode, right=of s2] (s3) {$v_3$};
+\node[lanenode, right=of s3] (s4) {$v_4$};
+\node[lanenode, right=of s4] (s5) {$v_5$};
+\node[lanenode, right=of s5] (s6) {$v_6$};
+
+% Level 1 XORs
+\node[xornode, below=of $(s0)!0.5!(s1)$] (x1) {$\oplus$};
+\node[xornode, below=of $(s2)!0.5!(s3)$] (x2) {$\oplus$};
+\node[xornode, below=of $(s4)!0.5!(s5)$] (x3) {$\oplus$};
+
+\draw[-Latex] (s0) -- (x1);
+\draw[-Latex] (s1) -- (x1);
+\draw[-Latex] (s2) -- (x2);
+\draw[-Latex] (s3) -- (x2);
+\draw[-Latex] (s4) -- (x3);
+\draw[-Latex] (s5) -- (x3);
+
+% Level 1.5 - v6 joins v0
+\node[xornode, below=0.5cm of x1] (x1b) {$\oplus$};
+\draw[-Latex] (x1) -- (x1b);
+\draw[-Latex] (s6) |- (x1b);
+
+% Level 2 XOR
+\node[xornode, below=0.8cm of $(x2)!0.5!(x3)$] (x4) {$\oplus$};
+\draw[-Latex] (x2) -- (x4);
+\draw[-Latex] (x3) -- (x4);
+
+% Final XOR
+\node[xornode, below=0.8cm of $(x1b)!0.5!(x4)$] (xf) {$\oplus$};
+\draw[-Latex] (x1b) -- (xf);
+\draw[-Latex] (x4) -- (xf);
+
+% Output
+\node[lanenode, below=0.5cm of xf, fill=gray!20] (out) {result};
+\draw[-Latex] (xf) -- (out);
+\end{tikzpicture}
+\end{center}
+
+\paragraph{Tail (17--112 bytes).}
+Nested conditionals process 16 bytes at a time with alternating secrets:
+\begin{center}
+\begin{tabular}{ccc}
+\toprule
+Bytes remaining & Offset & Secret \\
+\midrule
+$> 16$ & 0, 8 & $s_2$ \\
+$> 32$ & 16, 24 & $s_2$ \\
+$> 48$ & 32, 40 & $s_1$ \\
+$> 64$ & 48, 56 & $s_1$ \\
+$> 80$ & 64, 72 & $s_2$ \\
+$> 96$ & 80, 88 & $s_1$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Finalization.}
+Read last 16 bytes as $(t_0, t_1)$ with $t_0 \gets t_0 \oplus n$, then apply
+$t_0 \gets t_0 \oplus s_1$, $t_1 \gets t_1 \oplus v_0$, and
+$(t_0, t_1) \gets (\textsc{Lo}(t_0 \times t_1), \textsc{Hi}(t_0 \times t_1))$.
+Return $\Mum(t_0 \oplus s_7,\, t_1 \oplus s_1 \oplus n)$.
+Differs from wyhash: length is XORed into $a$ before MUM (not the final result),
+uses $s_7$ instead of $s_0$, and includes length twice in finalization.
+
+\subsection{rapidhash Variants}
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Variant & Chunk size & Lanes & Secrets used \\
+\midrule
+rapidhash & 112 bytes & 7 & $s_0$--$s_7$ \\
+rapidhashMicro & 80 bytes & 5 & $s_0$--$s_4$, $s_7$ \\
+rapidhashNano & 48 bytes & 3 & $s_0$--$s_2$, $s_7$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Rust port.} The \texttt{rust-rapidhash} implementation uses a different
+seed initialization: secrets are regenerated from the user seed using the protected
+MUM variant, ensuring non-zero quality in specific bit ranges. This makes hashes
+incompatible between the C and Rust versions for the same seed.

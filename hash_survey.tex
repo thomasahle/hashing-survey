@@ -1,0 +1,89 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,shapes,calc,decorations.pathreplacing}
+
+\newcommand{\xmark}{\textcolor{red}{\textsf{X}}}
+\newcommand{\cmark}{\textcolor{green!60!black}{\checkmark}}
+
+% Rotation macro - use function notation: \Rot{k}{x} produces "rot_k(x)"
+% To switch back to symbol notation, change the definition to:
+%   \newcommand{\Rot}[2]{#2 \circlearrowleft_{#1}}
+\newcommand{\Rot}[2]{\textsc{rot}_{#1}(#2)}
+
+% Clickable function references
+\newcommand{\Mum}{\hyperref[sec:mum]{\textsc{Mum}}}
+\newcommand{\Round}{\hyperref[sec:xxhash-round]{\textsc{Round}}}
+\newcommand{\Merge}{\hyperref[sec:merge]{\textsc{Merge}}}
+\newcommand{\SipRound}{\hyperref[sec:sipround]{\textsc{SipRound}}}
+\newcommand{\Clmul}{\hyperref[sec:clmul-primitives]{\textsc{clmul}}}
+\newcommand{\Aesenc}{\hyperref[sec:aes-primitives]{\textsc{aesenc}}}
+\newcommand{\Aesdec}{\hyperref[sec:aes-primitives]{\textsc{aesdec}}}
+\newcommand{\ShiftMix}{\hyperref[sec:shiftmix]{\textsc{ShiftMix}}}
+\newcommand{\Fmix}{\hyperref[sec:fmix]{\textsc{fmix64}}}
+
+% Parameterized xorshift: \Xorshift{r}(v) denotes v ⊕ (v >> r)
+\newcommand{\Xorshift}[1]{\hyperref[sec:xorshift]{\textsc{Xorshift}}_{#1}}
+
+% Word read primitive: \Read{w}(p, i) reads w-bit word at offset i
+\newcommand{\Read}[1]{\textsc{Read}_{#1}}
+
+% Word types for pseudocode: \ut{64} renders as "u64"
+\newcommand{\ut}[1]{\ensuremath{\mathsf{u#1}}}
+
+\newtheorem{lemma}{Lemma}
+\newtheorem{theorem}{Theorem}
+
+\title{A Survey of Non-Cryptographic Hash Functions\\
+\large As Implemented in SMHasher3}
+
+\author{Thomas Dybdahl Ahle}
+
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document provides a comprehensive survey of non-cryptographic hash functions
+as implemented in the SMHasher3 testing framework~\cite{smhasher3}. We present each algorithm
+using clear pseudocode and mathematical notation, analyze their mixing properties,
+and discuss their relative strengths and weaknesses.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\input{sections/introduction}
+\input{sections/comparison}
+\input{sections/preliminaries}
+\input{sections/round_functions}
+\input{sections/wyhash_family}
+\input{sections/a5hash_family}
+\input{sections/xxhash_family}
+\input{sections/siphash_family}
+\input{sections/other_notable}
+\input{sections/clmul_polynomial}
+\input{sections/aes_based}
+\input{sections/simd_scalable}
+
+\appendix
+\input{sections/appendix_mum}
+
+\bibliographystyle{alpha}
+\bibliography{refs}
+
+\end{document}

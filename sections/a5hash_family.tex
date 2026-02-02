@@ -1,0 +1,183 @@
+%=============================================================================
+\section{The a5hash/MuseAir Family}
+%=============================================================================
+
+These hashes also use the MUM primitive but with different architectural choices
+than wyhash/rapidhash.
+
+\subsection{a5hash}
+\label{sec:a5hash}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/a5hash.cpp}{\texttt{hashes/a5hash.cpp}}, version 5.21~\cite{a5hash}.
+
+A MUM-based hash by Aleksey Vaneev with a single MUM lane in the main loop (simpler than
+wyhash's 3 lanes). Uses mantissa bits of $\pi$ for initial state and checkerboard masks
+$c_0 = \texttt{0x5555...}$, $c_1 = \texttt{0xAAAA...}$ that ensure different bit positions
+are treated differently. Addition of masks after each round prevents zero-multiplication
+weaknesses. Available in 32-bit, 64-bit, and 128-bit variants.
+
+\begin{algorithmic}[1]
+\State $v_0 \gets \texttt{0x243F6A8885A308D3} \oplus n$, $v_1 \gets \texttt{0x452821E638D01377} \oplus n$ \Comment{From $\pi$}
+\State $(v_0, v_1) \gets \Mum_{128}(v_1 \oplus (\mathit{seed} \land c_1), v_0 \oplus (\mathit{seed} \land c_0))$
+\If{$n > 16$}
+    \State $c_0 \gets c_0 \oplus v_0$; $c_1 \gets c_1 \oplus v_1$
+    \For{each block $(x_0, x_1)\in \ut{64}^2$ excluding final 16 bytes} \Comment{Main loop}
+        \State $(v_0, v_1) \gets \Mum_{128}(x_0 \oplus v_0, x_1 \oplus v_1)$
+        \State $v_0 \gets v_0 + c_0$; $v_1 \gets v_1 + c_1$
+    \EndFor
+\EndIf
+\State Handle tail (0--16 bytes) with overlapping reads
+\State $(v_0, v_1) \gets \Mum_{128}(v_0, v_1)$
+\State $(v_0, v_1) \gets \Mum_{128}(v_0 \oplus c_0, v_1)$
+\State \Return $v_0 \oplus v_1$
+\end{algorithmic}
+
+Here $\Mum_{128}(a, b)$ returns both halves of the 128-bit product: $(\textsc{Lo}(a \times b), \textsc{Hi}(a \times b))$.
+
+\subsection{MuseAir}
+\label{sec:museair}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/museair.cpp}{\texttt{hashes/museair.cpp}}, version 0.3~\cite{museair}.
+
+A MUM-based hash by K--Aethiax with 6-lane parallelism and chained dependencies between lanes.
+Uses 7 constants from $\mathrm{Ai}(0)$ mantissa ($s_0 = \texttt{0x5ae31e589c56e17a}$, ...).
+The \hyperref[fn:museair-mumix]{\textsc{mumix}} primitive either XORs MUM output into state (standard) or replaces it (bfast).
+Cross-lane MUM pattern in the epilogue ensures full mixing. Available in standard, bfast
+(faster, slightly weaker), and 128-bit variants.
+
+\paragraph{\hyperref[fn:museair-mumix]{\textsc{mumix}}.}\phantomsection\label{fn:museair-mumix}
+
+\begin{algorithmic}[1]
+\Function{mumix}{$v_p, v_q, x_p, x_q$} \Comment{State words $(v_p, v_q)$, input words $(x_p, x_q)$}
+    \State $a \gets v_p \oplus x_p$; \quad $b \gets v_q \oplus x_q$
+    \State $(\ell, h) \gets \Mum_{128}(a, b)$
+    \State $(v_p, v_q) \gets (a \oplus \ell,\, b \oplus h)$ \Comment{Standard variant}
+    \State \Comment{bfast variant: $(v_p, v_q) \gets (\ell,\, h)$}
+\EndFunction
+\end{algorithmic}
+
+\paragraph{Long Keys.}
+
+	\begin{algorithmic}[1]
+	\State Initialize 6 state variables from seed:
+	\State \quad $v_0 \gets s_0 + \mathit{seed}$, $v_1 \gets s_1 - \mathit{seed}$, $v_2 \gets s_2 \oplus \mathit{seed}$
+	\State \quad $v_3 \gets s_3 + \mathit{seed}$, $v_4 \gets s_4 - \mathit{seed}$, $v_5 \gets s_5 \oplus \mathit{seed}$
+	\State $t \gets s_6$ \Comment{Initial chain value}
+	\For{each block $(x_0, \ldots, x_{11})\in \ut{64}^{12}$} \Comment{Main loop: 6 parallel lanes}
+	    \For{$i \in \{0, \ldots, 5\}$}
+	        \State $v_i \gets v_i \oplus x_{2i}$
+	        \State $v_{(i+1) \bmod 6} \gets v_{(i+1) \bmod 6} \oplus x_{2i+1}$
+	        \State $(\mathit{lo}, \mathit{hi}) \gets \Mum_{128}(v_i, v_{(i+1) \bmod 6})$
+	        \State $v_i \gets v_i + (t \oplus \mathit{hi})$ \Comment{Chain: previous lo XOR current hi}
+	        \State $t \gets \mathit{lo}$
+	    \EndFor
+	\EndFor
+	\State $v_0 \gets v_0 + t$ \Comment{Fold in last chain value}
+	\State Process remaining 48, 32, 16 bytes with \hyperref[fn:museair-mumix]{\textsc{mumix}}
+	\State Apply \hyperref[fn:museair-mumix]{\textsc{mumix}} to the last 16 bytes (tail summarized)
+	\State $t_0 \gets v_0 - v_1$, $t_1 \gets v_2 - v_3$, $t_2 \gets v_4 - v_5$ \Comment{Finalization: collapse lanes}
+	\State $t_0 \gets \Rot{n \bmod 64}{t_0}$, $t_1 \gets \Rot{64-(n \bmod 64)}{t_1}$, $t_2 \gets t_2 \oplus n$ \Comment{$\Rot{64-r}{}$ is right-rotate by $r$}
+	\State $(t'_0, t'_1) \gets \Mum_{128}(t_0, t_1)$, $(t'_2, t'_3) \gets \Mum_{128}(t_1, t_2)$, $(t'_4, t'_5) \gets \Mum_{128}(t_2, t_0)$
+	\State $t_0 \gets t'_0 \oplus t'_5$, $t_1 \gets t'_2 \oplus t'_1$, $t_2 \gets t'_4 \oplus t'_3$ \Comment{Cross lo/hi}
+	\State $(u_0, u_1) \gets \Mum_{128}(t_0, t_1)$, $(u_2, u_3) \gets \Mum_{128}(t_1, t_2)$, $(u_4, u_5) \gets \Mum_{128}(t_2, t_0)$
+	\State \Return $(u_0 \oplus u_5) + (u_2 \oplus u_1) + (u_4 \oplus u_3)$ \Comment{64-bit}
+	\end{algorithmic}
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+    >=Latex,
+    var/.style={font=\small},
+    mum/.style={circle, draw, fill=blue!15, minimum size=0.8cm, font=\tiny, align=center},
+    xornode/.style={circle, draw, minimum size=0.45cm, font=\scriptsize}
+]
+% Column positions (wider spacing)
+\def\colA{0}
+\def\colB{2.2}
+\def\colC{4.4}
+
+% === Row 0: Variables t_0, t_1, t_2 ===
+\node[var] (i0) at (\colA, 0) {$t_0$};
+\node[var] (j0) at (\colB, 0) {$t_1$};
+\node[var] (k0) at (\colC, 0) {$t_2$};
+
+% Vertical lines down from variables
+\draw (i0) -- (\colA, -0.4);
+\draw (j0) -- (\colB, -0.4);
+\draw (k0) -- (\colC, -0.4);
+
+% === Round 1: Mum nodes ===
+\node[mum] (m1L) at (\colA, -1.5) {\textsc{Mum}};
+\node[mum] (m1M) at (\colB, -1.5) {\textsc{Mum}};
+\node[mum] (m1R) at (\colC, -1.5) {\textsc{Mum}};
+
+% Lines to Mum nodes
+\draw (\colA, -0.4) -- (m1L);
+\draw (\colB, -0.4) -- (m1L);
+\draw (\colB, -0.4) -- (m1R);
+\draw (\colC, -0.4) -- (m1R);
+\draw (\colA, -0.4) -- (m1M);
+\draw (\colC, -0.4) -- (m1M);
+
+% === XOR nodes (after Round 1) ===
+\node[xornode] (xor1a) at (\colA, -3.0) {$\oplus$};
+\node[xornode] (xor1b) at (\colB, -3.0) {$\oplus$};
+\node[xornode] (xor1c) at (\colC, -3.0) {$\oplus$};
+
+% Lines from Mum to XOR
+\draw (m1L) -- (xor1a);
+\draw (m1L) -- (xor1b);
+\draw (m1M) -- (xor1a);
+\draw (m1M) -- (xor1c);
+\draw (m1R) -- (xor1b);
+\draw (m1R) -- (xor1c);
+
+% Vertical lines after XOR
+\draw (xor1a) -- (\colA, -3.5);
+\draw (xor1b) -- (\colB, -3.5);
+\draw (xor1c) -- (\colC, -3.5);
+
+% === Round 2: Mum nodes ===
+\node[mum] (m2L) at (\colA, -4.5) {\textsc{Mum}};
+\node[mum] (m2M) at (\colB, -4.5) {\textsc{Mum}};
+\node[mum] (m2R) at (\colC, -4.5) {\textsc{Mum}};
+
+% Lines to Mum nodes
+\draw (\colA, -3.5) -- (m2L);
+\draw (\colB, -3.5) -- (m2L);
+\draw (\colB, -3.5) -- (m2R);
+\draw (\colC, -3.5) -- (m2R);
+\draw (\colA, -3.5) -- (m2M);
+\draw (\colC, -3.5) -- (m2M);
+
+% === XOR nodes (after Round 2) ===
+\node[xornode] (xor2a) at (\colA, -6.1) {$\oplus$};
+\node[xornode] (xor2b) at (\colB, -6.1) {$\oplus$};
+\node[xornode] (xor2c) at (\colC, -6.1) {$\oplus$};
+
+% Lines from Mum to XOR
+\draw (m2L) -- (xor2a);
+\draw (m2L) -- (xor2b);
+\draw (m2M) -- (xor2a);
+\draw (m2M) -- (xor2c);
+\draw (m2R) -- (xor2b);
+\draw (m2R) -- (xor2c);
+
+% === Converge to sum ===
+\node[xornode, fill=orange!20] (sum) at (\colB, -7.0) {$+$};
+\draw (xor2a) -- (sum);
+\draw (xor2b) -- (sum);
+\draw (xor2c) -- (sum);
+
+% === Result ===
+\draw[->] (sum) -- (\colB, -7.7);
+\node[var] at (\colB, -8.0) {result};
+
+% Round labels
+\node[font=\scriptsize, anchor=west] at (4.8, -1.5) {Round 1};
+\node[font=\scriptsize, anchor=west] at (4.8, -4.6) {Round 2};
+
+\end{tikzpicture}
+\caption{MuseAir finalizer. Each round performs three $\Mum_{128}$ operations on all pairs of its three inputs, then cross-XORs the lo/hi halves. After two rounds the three values are summed for the 64-bit result.}
+\label{fig:museair-finalizer}
+\end{figure}

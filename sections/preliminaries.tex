@@ -1,0 +1,232 @@
+%=============================================================================
+\section{Preliminaries}
+%=============================================================================
+
+\subsection{Notation}
+
+\begin{center}
+\begin{tabular}{cl}
+\toprule
+Symbol & Meaning \\
+\midrule
+$\oplus$ & Bitwise XOR \\
+$\cdot$ & Multiplication modulo $2^w$ on $\ut{w}$ words (keep the low $w$ bits) unless noted \\
+$\Rot{k}{x}$ & Left rotation of $x$ by $k$ bits \\
+$\gg$ & Logical right shift \\
+$\ll$ & Left shift \\
+$\textsc{Lo}(x)$ & Low 64 bits of 128-bit value $x$ \\
+$\textsc{Hi}(x)$ & High 64 bits of 128-bit value $x$ \\
+$\textsc{Lo32}(x)$ & Low 32 bits of 64-bit value $x$ \\
+$\textsc{Hi32}(x)$ & High 32 bits of 64-bit value $x$ \\
+	\midrule
+	$p$ & Pointer to input bytes \\
+	$n$ & Input length in bytes \\
+	$\mathit{seed}$ & User-provided seed (may be secret for keyed hashes) \\
+	$k_i$ & Secret key words (e.g.\ SipHash) \\
+	$s_i$ & Algorithm-specific fixed constants / secret tables \\
+	$v_i$ & Evolving internal state words (accumulators/lanes) \\
+	$\Read{w}(p, i)$ & Read $w$-bit word at byte offset $i$ from $p$ \\
+	$p[i]$ & Byte at offset $i$ (equivalent to $\Read{8}(p, i)$) \\
+	$m_i$ & The $i$-th block of input (block size $B$ varies by hash) \\
+	$x_j$ & The $j$-th word within current block (64-bit unless noted) \\
+	$\ut{w}$ & Unsigned $w$-bit word type (e.g.\ $\ut{32}$, $\ut{64}$) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Terminology.}
+A \textbf{block} is the fixed-size unit processed by the main loop (e.g., 48 bytes for wyhash, 112 bytes for rapidhash).
+The term \textbf{stripe} is XXH3-specific, denoting a 64-byte segment processed across 8 parallel lanes.
+We use ``block'' consistently; some hash authors use ``chunk'' synonymously.
+
+\subsection{Primitive Categories}
+\label{sec:primitives}
+
+Modern hash functions are built from a small set of mixing primitives:
+
+\begin{description}
+\item[MUM (Multiply-Mix)] Wide multiplication followed by XOR folding:
+\begin{equation}
+\Mum(a,\, b) = \textsc{Lo}(a \times b) \oplus \textsc{Hi}(a \times b)
+\end{equation}
+Fast on modern CPUs with efficient 64$\times$64$\to$128 multiply units.
+Used by wyhash, rapidhash, XXH3, komihash, t1ha.
+
+\item[ARX (Add-Rotate-XOR)] Combines addition, rotation, and XOR in patterns like:
+\begin{equation}
+h \gets \Rot{r}{h + x} \oplus y \quad\text{or}\quad h \gets \Rot{r}{h \oplus x} + y
+\end{equation}
+Portable and constant-time friendly. Used by MurmurHash, xxHash32/64, SipHash, SpookyHash, lookup3.
+
+\item[CLMUL (Carry-less Multiply)] Polynomial multiplication in $\mathrm{GF}(2^n)$:
+\begin{equation}
+a \otimes b = a \cdot b \mod p(x)
+\end{equation}
+where $\cdot$ is polynomial multiplication (XOR for addition, AND for coefficient multiplication).
+Theoretically grounded with provable collision bounds. Used by CLHash, UMASH. Requires PCLMULQDQ instruction.
+
+\item[Polynomial over $\mathrm{GF}(p)$] Evaluates polynomial over a prime field:
+\begin{equation}
+h \gets (h \cdot k + m_i) \mod p \quad\text{typically } p = 2^{61}-1
+\end{equation}
+Strong theoretical guarantees from algebra. Used by UMASH, Polymur.
+
+\item[AES-NI] Uses AES encryption rounds for mixing:
+\begin{equation}
+\textsc{aesenc}(\mathit{state}, \mathit{key}) = \text{MixColumns}(\text{ShiftRows}(\text{SubBytes}(\mathit{state}))) \oplus \mathit{key}
+\end{equation}
+Excellent diffusion (full avalanche) in a single instruction. Used by AquaHash, MeowHash.
+
+\item[Simple Multiply] Basic multiply-accumulate:
+\begin{equation}
+h \gets (h \oplus b) \cdot p \quad\text{(FNV-1a)} \qquad h \gets h \cdot 33 + b \quad\text{(DJB2)}
+\end{equation}
+Minimal code size but weaker mixing. One byte per iteration.
+\end{description}
+
+Most high-performance hashes use MUM or ARX. MUM-based hashes are generally faster on x86-64;
+ARX-based hashes are more portable. CLMUL and AES-based hashes offer the highest throughput
+on supported hardware.
+
+\subsection{Common Hash Structure}
+
+Most non-cryptographic hash functions follow a similar high-level structure:
+
+\begin{description}
+\item[Initialization] Set up state variables (accumulators) from seed and/or constants.
+Multiple accumulators enable parallel processing.
+
+\item[Main Loop] Process input in fixed-size blocks. Each block updates the
+state using the hash's core mixing primitive. Multiple \emph{parallel lanes}---independent
+accumulators updated simultaneously---allow modern CPUs to exploit instruction-level
+parallelism.
+
+\item[Tail Handling] Process remaining bytes that don't fill a complete block.
+Often uses different logic than the main loop (overlapping reads, byte-by-byte, etc.).
+
+\item[Lane Collapse] Combine multiple parallel lanes into a single value, typically
+via XOR trees, addition chains, or mixing functions.
+
+\item[Finalization] Apply an avalanche finalizer (xorshift and multiplication) to ensure all input
+bits affect all output bits (avalanche property).
+\end{description}
+
+The block size and number of lanes vary by hash: wyhash uses 48-byte blocks with 3 lanes,
+rapidhash uses 112-byte blocks with 7 lanes, and MuseAir uses 96-byte blocks with 6 lanes.
+
+\subsection{Finalizers and Mixers}
+
+Most fast non-cryptographic hashes end with a short \emph{avalanche} stage that destroys
+residual structure from the main loop. These finalizers are usually built from two
+permutations on $w$-bit words:
+\begin{itemize}
+\item \textbf{Xorshift}: $\Xorshift{r}(x) = x \oplus (x \gg r)$ is invertible for $0<r<w$.
+\item \textbf{Multiply by an odd constant}: $x \gets x \cdot c$ is invertible mod $2^w$ when $c$ is odd.
+\end{itemize}
+
+The common template is:
+\begin{align}
+h &\gets \Xorshift{r_1}(h) \\
+h &\gets h \cdot c_1 \\
+h &\gets \Xorshift{r_2}(h) \\
+h &\gets h \cdot c_2 \\
+h &\gets \Xorshift{r_3}(h)
+\end{align}
+Different hashes choose $(r_i)$ and $(c_i)$ empirically (e.g.\ \hyperref[fn:xxh32-avalanche]{\textsc{XXH32\_avalanche}},
+\hyperref[fn:xxh64-avalanche]{\textsc{XXH64\_avalanche}}, the XXH3 finalizer, and Polymur's mx3 finalizer).
+
+\paragraph{Common sub-steps.}
+It is convenient to name two ubiquitous building blocks:
+\begin{align}
+\textsc{XMS}_{r,c}(x) &= (x \oplus (x \gg r)) \cdot c \qquad\text{(xorshift-then-multiply)} \\
+\textsc{ShiftMix}(x) &= x \oplus (x \gg 47)
+\end{align}
+Many ``Murmur-style'' combiners (e.g.\ FarmHash's \textsc{Hash128to64} and \textsc{HashLen16})
+use \textsc{ShiftMix} between multiplications; xxHash uses \textsc{XMS} with two different constants.
+
+\paragraph{Pseudocode conventions.}
+Main loop processing is shown in full detail. Tail handling (which often involves
+complex case analysis for 1--15 remaining bytes) is sometimes summarized as
+``handle remaining bytes'' to keep pseudocode readable. The core mixing primitives
+are always fully specified. Comments use \texttt{\%} for section boundaries
+(Bulk/Tail/Finalization) where helpful.
+
+\paragraph{Scalar ILP vs.\ SIMD lanes.}
+Hash ``lanes'' come in two flavors:
+\begin{itemize}
+\item \textbf{Scalar ILP lanes} (wyhash, rapidhash, SpookyHash): Independent scalar
+accumulators that exploit the CPU's out-of-order execution engine. The 64$\times$64$\to$128-bit
+multiply used by MUM \emph{has no SIMD instruction}---SSE/AVX only provide 32$\times$32$\to$64.
+These hashes use 3--7 independent dependency chains to keep the scalar
+multiply unit fed. Lane counts like 3 or 7 are tuned for register pressure and multiply
+latency, not SIMD widths.
+
+\item \textbf{True SIMD lanes} (XXH3, AquaHash, MeowHash, HalftimeHash): Vector operations using
+SSE/AVX/NEON intrinsics with operations that \emph{do} vectorize: AES-NI instructions
+(\texttt{aesenc}/\texttt{aesdec}) or 32$\times$32$\to$64 multiplies (\texttt{\_mm\_mul\_epu32}).
+XXH3 uses 32$\times$32 multiplies for its long-key path (explicit AVX2/SSE2/NEON implementations),
+but falls back to scalar 64$\times$64 MUM for short/medium keys where SIMD overhead isn't worth it.
+\end{itemize}
+
+\begin{center}
+\begin{tikzpicture}[
+    >=Latex,
+    scale=0.9,
+    inst/.style={rectangle, draw, minimum width=0.6cm, minimum height=0.4cm, font=\tiny},
+    unit/.style={rectangle, draw, minimum width=0.7cm, minimum height=0.5cm, font=\scriptsize, fill=gray!15},
+    label/.style={font=\scriptsize}
+]
+% === Scalar ILP (left side) ===
+\node[label, font=\footnotesize\bfseries] at (0, 2.2) {Scalar ILP};
+\node[label] at (0, 1.7) {(rapidhash, wyhash)};
+
+% Pipeline stages
+\node[unit] (f1) at (-1, 0.8) {Fetch};
+\node[unit] (d1) at (0, 0.8) {Decode};
+\node[unit] (e1) at (1, 0.8) {Exec};
+\node[unit] (w1) at (2, 0.8) {Write};
+
+% Instructions flowing through (3 independent chains)
+\node[inst, fill=red!30] (i1a) at (-1, 0) {$v_0$};
+\node[inst, fill=blue!30] (i2a) at (-1, -0.5) {$v_1$};
+\node[inst, fill=green!30] (i3a) at (-1, -1) {$v_2$};
+
+\node[inst, fill=red!30] (i1b) at (0, 0) {$v_0$};
+\node[inst, fill=blue!30] (i2b) at (0, -0.5) {$v_1$};
+\node[inst, fill=green!30] (i3b) at (0, -1) {$v_2$};
+
+\node[inst, fill=red!30] (i1c) at (1, 0) {$v_0$};
+\node[inst, fill=blue!30] (i2c) at (1, -0.5) {$v_1$};
+\node[inst, fill=green!30] (i3c) at (1, -1) {$v_2$};
+
+\node[inst, fill=red!30] (i1d) at (2, 0) {$v_0$};
+\node[inst, fill=blue!30] (i2d) at (2, -0.5) {$v_1$};
+\node[inst, fill=green!30] (i3d) at (2, -1) {$v_2$};
+
+\draw[->, thick] (-1.8, -0.5) -- (-1.4, -0.5);
+\node[label, anchor=east] at (-1.8, -0.5) {time};
+
+\node[label, align=center] at (0.5, -1.8) {3 independent\\64-bit multiplies};
+
+% === True SIMD (right side) ===
+\node[label, font=\footnotesize\bfseries] at (6, 2.2) {True SIMD};
+\node[label] at (6, 1.7) {(XXH3, MeowHash, AquaHash)};
+
+% Vector unit
+\node[unit, minimum width=3cm] (vu) at (6, 0.8) {Vector Unit (256-bit)};
+
+% Single wide instruction
+\node[inst, fill=red!30, minimum width=0.6cm] (s1) at (4.8, 0) {$v_0$};
+\node[inst, fill=blue!30, minimum width=0.6cm] (s2) at (5.5, 0) {$v_1$};
+\node[inst, fill=green!30, minimum width=0.6cm] (s3) at (6.2, 0) {$v_2$};
+\node[inst, fill=yellow!30, minimum width=0.6cm] (s4) at (6.9, 0) {$v_3$};
+
+\draw[decorate, decoration={brace, amplitude=5pt, mirror}] (4.5, -0.3) -- (7.2, -0.3);
+\node[label] at (5.85, -0.7) {1 instruction};
+
+\node[label, align=center] at (6, -1.8) {4 parallel AES ops\\in single instruction};
+
+% Dividing line
+\draw[dashed, gray] (3.2, 2.5) -- (3.2, -2.2);
+\end{tikzpicture}
+\end{center}

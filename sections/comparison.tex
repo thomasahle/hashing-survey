@@ -1,0 +1,53 @@
+%=============================================================================
+\section{Comparison}
+%=============================================================================
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+Hash & Output & Block & Lanes & Primitive & Keying & Provable width \\
+\midrule
+a5hash & 64 & 16 & 1 & MUM & seed & N/A \\
+a5hash-128 & 128 & 32/64 & 2/4 & MUM & seed & N/A \\
+MuseAir & 64 & 96 & 6 & MUM & seed & N/A \\
+wyhash & 64 & 48 & 3 & MUM & seed+secret & N/A \\
+rapidhash & 64 & 112 & 7 & MUM & seed+secret & N/A \\
+rapidhashMicro & 64 & 80 & 5 & MUM & seed+secret & N/A \\
+rapidhashNano & 64 & 48 & 3 & MUM & seed+secret & N/A \\
+xxHash32 & 32 & 16 & 4 & ARX & seed & N/A \\
+xxHash64 & 64 & 32 & 4 & ARX & seed & N/A \\
+XXH3-64 & 64 & 64 & 8 & MUM & seed+secret & N/A \\
+SipHash-2-4 & 64 & 8 & 1 & ARX & 128-bit key & N/A \\
+komihash & 64 & 64 & 4 & MUM & seed & N/A \\
+ChibiHash & 64 & 32 & 4 & mult+rot & seed & N/A \\
+CLHash & 64 & 1024 & 8 (ILP) & CLMUL & random key & $\approx 64 - \log_2 n$ \\
+UMASH & 64/128 & 256 & 4 (ILP) & CLMUL+poly & random key & $\approx 61$ \\
+Polymur & 64 & 49 & 1 & poly($2^{61}{-}1$) & derived key & $\approx 61$ \\
+AquaHash & 128 & 64 & 4 & AES & 128-bit seed & N/A \\
+MeowHash & 128 & 256 & 8 & AES & 128-bit seed & N/A \\
+HalftimeHash & 64 & var & var & 32-bit mul & random key & N/A \\
+SpookyHash & 128 & 96 & 12 & ARX & seed & N/A \\
+FarmHash & 64 & 64 & 7 & ARX+MUM & seed & N/A \\
+Rainbow & 64 & 16 & 4 & mult+rot & seed & N/A \\
+prvhash & 64 & 8 & 1 & PRNG & seed & N/A \\
+XMSX & 32 & 4 & 1 & mult+shift & seed & N/A \\
+khashv & 64 & 16 & 4 & S-box+ARX & seed & N/A \\
+aHash & 64 & 16 & 2 & AES & random key & N/A \\
+HalfSipHash & 32 & 4 & 1 & ARX & 64-bit key & N/A \\
+poly-mersenne & 32 & 8 & 1 & poly($2^{61}{-}1$) & random key & $\approx 61$ \\
+\bottomrule
+\end{tabular}
+\caption{Structural comparison of hash functions. ``Lanes'' indicates parallel accumulators; ``(ILP)'' denotes instruction-level parallelism without explicit state lanes. ``Keying'' shows the security model: seed-only hashes are vulnerable to seed-independent attacks; secret/key-based hashes resist them if the key is hidden. ``Provable width'' is the effective bits $w = -\log_2(\epsilon)$ for a published $\epsilon$-almost-universal collision bound under a random secret key (often length-dependent, e.g.\ $\epsilon \approx n/2^{64}$).}
+\end{table}
+
+\paragraph{Design trade-offs:}
+\begin{itemize}
+\item \textbf{MUM-based} (a5hash, MuseAir, wyhash, rapidhash, XXH3, komihash): Fast on modern CPUs with efficient 64$\times$64$\to$128 multiply. Excellent throughput for long keys.
+\item \textbf{ARX-based} (xxHash32/64, SipHash, SpookyHash, FarmHash): Portable, constant-time friendly. SipHash sacrifices speed for cryptographic security margin. SpookyHash uses 12 lanes for high throughput.
+\item \textbf{Parallel lanes}: More lanes = higher throughput but more state to maintain. rapidhash (7 lanes) vs wyhash (3 lanes) trades complexity for speed. MuseAir uses 6 lanes with chained dependencies.
+\item \textbf{Polynomial} (Polymur, UMASH): Theoretically grounded with provable collision bounds. UMASH combines CLMUL compression with polynomial finalization.
+\item \textbf{AES-based} (AquaHash, MeowHash, aHash): Highest throughput on supporting hardware via AES-NI instructions. aHash is the default in Rust's HashMap.
+\item \textbf{Keying}: Hashes with secret keys (SipHash, CLHash, UMASH) resist HashDoS attacks if the key is kept hidden. Seed-only hashes can be attacked with seed-independent collisions.
+\end{itemize}

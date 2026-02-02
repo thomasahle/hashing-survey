@@ -1,0 +1,203 @@
+%=============================================================================
+\section{SipHash Family}
+%=============================================================================
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/siphash.cpp}{\texttt{hashes/siphash.cpp}}~\cite{siphash}.
+
+SipHash is a cryptographically-informed hash function designed to resist hash-flooding DoS attacks.
+Requires a 128-bit secret key. Uses an ARX construction (no multiplications) with a keyed permutation
+and Feistel-like cross-lane mixing. Sequential by design---cannot be parallelized across blocks.
+
+\subsection{Constants}
+
+Initialization vectors $s_0, s_1, s_2, s_3$ are fixed 64-bit constants
+(they encode the ASCII string ``somepseudorandomlygeneratedbytes'').
+
+\subsection{SipRound}
+\label{sec:sipround}
+
+The core permutation operates on four 64-bit state words $(v_0, v_1, v_2, v_3)$.
+It consists of two half-rounds with a cross-over in between:
+
+\begin{center}
+\begin{tikzpicture}[
+    >=Latex,
+    scale=0.9,
+    transform shape,
+    state/.style={rectangle, draw, minimum width=0.95cm, minimum height=0.55cm, font=\footnotesize},
+    opnode/.style={circle, draw, minimum size=0.55cm, inner sep=0pt, font=\scriptsize},
+    rotnode/.style={rectangle, draw, rounded corners, minimum width=0.95cm, minimum height=0.5cm, font=\scriptsize, fill=gray!10}
+]
+% Lanes
+\def\xA{0}
+\def\xB{2.0}
+\def\xC{4.0}
+\def\xD{6.0}
+\def\xR{7.4}
+\def\xL{-1.4}
+
+% Rows
+\def\yIn{0}
+\def\yAddA{-1.0}
+\def\yXorA{-2.1}
+\def\yAfterA{-3.0}
+\def\yRotA{-3.9}
+\def\yAddB{-5.1}
+\def\yXorB{-6.2}
+\def\yAfterB{-7.1}
+\def\yRotB{-8.0}
+\def\yOut{-9.0}
+
+% Input
+\node[state] (in0) at (\xA,\yIn) {$v_0$};
+\node[state] (in1) at (\xB,\yIn) {$v_1$};
+\node[state] (in2) at (\xC,\yIn) {$v_2$};
+\node[state] (in3) at (\xD,\yIn) {$v_3$};
+
+% === Half-round 1 ===
+% v0 += v1; v1 = rot13(v1) xor v0
+\node[opnode]  (add01) at (1.0,\yAddA) {$+$};
+\node[rotnode] (rot13) at (\xB,\yAddA) {rot$_{13}$};
+\node[opnode]  (xor01) at (\xB,\yXorA) {$\oplus$};
+\coordinate (v0a) at (\xA,\yAfterA);
+\coordinate (v1a) at (\xB,\yAfterA);
+
+\draw[->] (in0) -- (add01);
+\draw[->] (in1) |- (add01);
+\draw[->] (in1) -- (rot13);
+\draw[->] (add01) -- (v0a);
+\draw[->] (add01) |- (xor01);
+\draw[->] (rot13) -- (xor01);
+\draw[->] (xor01) -- (v1a);
+
+% v2 += v3; v3 = rot16(v3) xor v2
+\node[opnode]  (add23) at (5.0,\yAddA) {$+$};
+\node[rotnode] (rot16) at (\xD,\yAddA) {rot$_{16}$};
+\node[opnode]  (xor23) at (\xD,\yXorA) {$\oplus$};
+\coordinate (v2a) at (\xC,\yAfterA);
+\coordinate (v3a) at (\xD,\yAfterA);
+
+\draw[->] (in2) -- (add23);
+\draw[->] (in3) |- (add23);
+\draw[->] (in3) -- (rot16);
+\draw[->] (add23) -- (v2a);
+\draw[->] (add23) |- (xor23);
+\draw[->] (rot16) -- (xor23);
+\draw[->] (xor23) -- (v3a);
+
+% Cross-over: v0 = rot32(v0)
+\node[rotnode] (rot32a) at (\xA,\yRotA) {rot$_{32}$};
+\draw[->] (v0a) -- (rot32a);
+
+% === Half-round 2 ===
+% v2 += v1; v1 = rot17(v1) xor v2
+\node[opnode]  (add21) at (3.0,\yAddB) {$+$};
+\node[rotnode] (rot17) at (\xB,\yAddB) {rot$_{17}$};
+\node[opnode]  (xor21) at (\xB,\yXorB) {$\oplus$};
+\coordinate (v2b) at (\xC,\yAfterB);
+\coordinate (v1b) at (\xB,\yAfterB);
+
+\draw[->] (v2a) to[out=-90,in=90] (add21);
+\draw[->] (v1a) |- (add21);
+\draw[->] (v1a) -- (rot17);
+\draw[->] (add21) -- (v2b);
+\draw[->] (add21) |- (xor21);
+\draw[->] (rot17) -- (xor21);
+\draw[->] (xor21) -- (v1b);
+
+% v0 += v3; v3 = rot21(v3) xor v0
+\node[opnode]  (add03) at (1.0,\yAddB) {$+$};
+\node[rotnode] (rot21) at (\xD,\yAddB) {rot$_{21}$};
+\node[opnode]  (xor03) at (\xD,\yXorB) {$\oplus$};
+\coordinate (v0b) at (\xA,\yAfterB);
+\coordinate (v3b) at (\xD,\yAfterB);
+
+\draw[->] (rot32a) |- (add03);
+% Route v3 to add03 outside to avoid a central crossing.
+\draw[->] (v3a) -- (\xR,\yAfterA) -- (\xR,\yAddB) -- (add03);
+\draw[->] (v3a) -- (rot21);
+\draw[->] (add03) -- (v0b);
+\draw[->] (add03) |- (xor03);
+\draw[->] (rot21) -- (xor03);
+\draw[->] (xor03) -- (v3b);
+
+% Final: v2 = rot32(v2)
+\node[rotnode] (rot32b) at (\xC,\yRotB) {rot$_{32}$};
+\draw[->] (v2b) -- (rot32b);
+
+% Output
+\node[state] (out0) at (\xA,\yOut) {$v_0$};
+\node[state] (out1) at (\xB,\yOut) {$v_1$};
+\node[state] (out2) at (\xC,\yOut) {$v_2$};
+\node[state] (out3) at (\xD,\yOut) {$v_3$};
+
+\draw[->] (v0b) -- (out0);
+\draw[->] (v1b) -- (out1);
+\draw[->] (rot32b) -- (out2);
+\draw[->] (v3b) -- (out3);
+
+% Stage labels
+\node[font=\footnotesize,anchor=west] at (8.0,\yIn) {Input};
+\node[font=\footnotesize,anchor=west] at (8.0,\yAfterA) {After half-round 1};
+\node[font=\footnotesize,anchor=west] at (8.0,\yAfterB) {After half-round 2};
+\node[font=\footnotesize,anchor=west] at (8.0,\yOut) {Output};
+\end{tikzpicture}
+\end{center}
+
+\noindent Each half-round: $v_i \gets v_i + v_{i+1}$, then $v_{i+1} \gets \Rot{r}{v_{i+1}} \oplus v_i$.
+After the first half-round, $v_0 \gets \Rot{32}{v_0}$ and the next half-round re-pairs the lanes to mix $(v_0, v_3)$ and $(v_2, v_1)$.
+The second half-round uses rotations 17 and 21, followed by $v_2 \gets \Rot{32}{v_2}$.
+
+\medskip
+\noindent The complete algebraic form:
+\begin{align}
+v_0 &\gets v_0 + v_1 & v_2 &\gets v_2 + v_3 \\
+v_1 &\gets \Rot{13}{v_1} & v_3 &\gets \Rot{16}{v_3} \\
+v_1 &\gets v_1 \oplus v_0 & v_3 &\gets v_3 \oplus v_2 \\
+v_0 &\gets \Rot{32}{v_0} \\
+v_2 &\gets v_2 + v_1 & v_0 &\gets v_0 + v_3 \\
+v_1 &\gets \Rot{17}{v_1} & v_3 &\gets \Rot{21}{v_3} \\
+v_1 &\gets v_1 \oplus v_2 & v_3 &\gets v_3 \oplus v_0 \\
+v_2 &\gets \Rot{32}{v_2}
+\end{align}
+
+\subsection{\texorpdfstring{SipHash-$c$-$d$}{SipHash-c-d}}
+\label{sec:siphash}
+
+Parameters $c$ and $d$ specify compression and finalization rounds.
+
+\begin{algorithmic}[1]
+\State $v_0 \gets k_0 \oplus s_0$
+\State $v_1 \gets k_1 \oplus s_1$
+\State $v_2 \gets k_0 \oplus s_2$
+\State $v_3 \gets k_1 \oplus s_3$
+\For{each block $x \in \ut{64}$}
+    \State $v_3 \gets v_3 \oplus x$
+    \For{$i \gets 1$ to $c$} \Comment{Compression rounds}
+        \State \SipRound{}
+    \EndFor
+    \State $v_0 \gets v_0 \oplus x$
+\EndFor
+\State $x \gets$ padded final block with length byte
+\State $v_3 \gets v_3 \oplus x$
+\For{$i \gets 1$ to $c$} \Comment{Compression rounds}
+    \State \SipRound{}
+\EndFor
+\State $v_0 \gets v_0 \oplus x$
+\State $v_2 \gets v_2 \oplus \texttt{0xff}$
+\For{$i \gets 1$ to $d$} \Comment{Finalization rounds}
+    \State \SipRound{}
+\EndFor
+\State \Return $v_0 \oplus v_1 \oplus v_2 \oplus v_3$
+\end{algorithmic}
+
+\paragraph{Common variants:}
+SipHash-2-4 ($c{=}2$, $d{=}4$): recommended.
+SipHash-1-3 ($c{=}1$, $d{=}3$): faster, lower security margin.
+
+\subsection{HalfSipHash}
+
+32-bit variant for resource-constrained environments (used in Linux kernel).
+
+\paragraph{SipRound (32-bit):}
+Different rotation constants: $(5, 8, 7, 13, 16)$ instead of $(13, 16, 17, 21, 32)$.

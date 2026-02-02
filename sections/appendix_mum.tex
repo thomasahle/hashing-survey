@@ -1,0 +1,270 @@
+\section{Folded Multiply (\texorpdfstring{$\mathrm{lo}\oplus\mathrm{hi}$}{lo xor hi})}
+\label{sec:mum-analysis}
+
+Let $m=2^n$. For each $x\in\{0,1,\dots,m-1\}$, define
+\[
+\operatorname{op}(x,y) \;=\; \Big\lfloor \frac{xy}{m}\Big\rfloor \;\oplus\; (xy\bmod m),
+\]
+and fiber sizes
+\[
+N_x(a) \;=\; \#\{y\in[0,m-1]:\operatorname{op}(x,y)=a\}.
+\]
+The collision count is
+\[
+C(x) \;=\; \sum_{a=0}^{m-1} N_x(a)^2,
+\qquad
+\mathbb{E}[C] \;=\; \frac{1}{m}\sum_{x=0}^{m-1} C(x).
+\]
+
+To bound $\mathbb{E}[C]$ we separate the two spike outputs $a=0$ and $a=m-1$ (the only ones amenable to exact analysis) and treat the rest as a residual term:
+\[
+C(x) = N_x(0)^2 + N_x(m-1)^2 + C^*(x),
+\qquad
+C^*(x) = \sum_{a\notin\{0,m-1\}} N_x(a)^2.
+\]
+
+Below are sharp, self-contained bounds on the \textbf{spike contribution}, plus a rigorous explanation of why ``repeating multipliers'' (like $0101\ldots$) cannot accumulate enough mass to change $\mathbb{E}[C]$ at the $m\log\log n$ scale.
+
+%----------------------------------------------------------------------
+\subsection{Exact formulas for the two spike fibers}
+\label{sec:spike-fibers}
+
+\begin{lemma}[Exact spike counts]\label{lem:spike-counts}
+For $1\le x\le m-1$,
+\[
+N_x(0) = \gcd(x,\, m+1), \qquad N_x(m-1) = \gcd(x,\, m-1).
+\]
+\end{lemma}
+
+\begin{proof}
+$\operatorname{op}(x,y)=0$ means ``high $=$ low,'' i.e.\ $q=r$ in $xy=mq+r$. Then
+\[
+xy = mq + q = (m+1)q,
+\]
+so $(m+1)\mid xy$. Let $d=\gcd(x,m+1)$. Then $(m+1)\mid xy$ is equivalent to $\frac{m+1}{d}\mid y$, because $\gcd(x/d,(m+1)/d)=1$. Since $x<m$, we have $d<m+1$, hence $(m+1)/d\ge 2$, and the multiples of $(m+1)/d$ in $[0,m-1]$ are exactly
+\[
+0,\; \frac{m+1}{d},\; 2\frac{m+1}{d},\; \dots,\; (d-1)\frac{m+1}{d},
+\]
+whose last term is $(m+1)-(m+1)/d \le m-1$. So there are exactly $d$ solutions $y$, i.e.\ $N_x(0)=d$.
+
+$\operatorname{op}(x,y)=m-1$ means $q\oplus r = m-1$, which forces $r=(m-1)-q$. Then
+\[
+xy = mq + r = mq + (m-1-q) = (m-1)(q+1),
+\]
+so $(m-1)\mid xy$. Let $d=\gcd(x,m-1)$. As above, $(m-1)\mid xy$ is equivalent to $\frac{m-1}{d}\mid y$, and the multiples in $[0,m-1]$ are
+\[
+0,\; \frac{m-1}{d},\; 2\frac{m-1}{d},\; \dots,\; (d-1)\frac{m-1}{d} = m-1-\frac{m-1}{d} < m,
+\]
+giving exactly $d$ solutions. So $N_x(m-1)=d$.
+\end{proof}
+
+For $x=0$, $\operatorname{op}(0,y)=0$ for all $y$, so $N_0(0)=m$ and $N_0(m-1)=0$. This single $x$ contributes only $O(m)$ to $\mathbb{E}[C]$, so it never affects asymptotics.
+
+%----------------------------------------------------------------------
+\subsection{Turning the spike identities into \texorpdfstring{$\Theta(m\log\log n)$}{Theta(m log log n)}}
+\label{sec:spike-theta}
+
+We need $\mathbb{E}[N_x(0)^2]$ and $\mathbb{E}[N_x(m-1)^2]$. These are essentially averages of $\gcd(\cdot,N)^2$.
+
+\begin{lemma}[Sum of squared gcds]\label{lem:gcd-sum}
+For any $N\ge 1$,
+\[
+\sum_{k=1}^{N}\gcd(k,N)^2 \;=\; N^2\sum_{d\mid N}\frac{\varphi(d)}{d^2},
+\]
+where $\varphi$ is Euler's totient.
+\end{lemma}
+
+\begin{proof}
+Group $k$ by $g=\gcd(k,N)$. Writing $k=gk'$ with $\gcd(k',N/g)=1$, there are $\varphi(N/g)$ such $k$. Hence
+\[
+\sum_{k=1}^{N}\gcd(k,N)^2
+= \sum_{g\mid N} g^2\,\varphi(N/g)
+= \sum_{d\mid N}\Big(\frac{N}{d}\Big)^{\!2}\varphi(d)
+= N^2\sum_{d\mid N}\frac{\varphi(d)}{d^2}. \qedhere
+\]
+\end{proof}
+
+Define
+\[
+F(N) := \sum_{d\mid N}\frac{\varphi(d)}{d^2}.
+\]
+
+\begin{lemma}[$F(N)$ versus $\sigma(N)/N$]\label{lem:F-vs-sigma}
+Let $\sigma(N)=\sum_{d\mid N} d$. Then for all $N$,
+\[
+\frac{6}{\pi^2}\cdot\frac{\sigma(N)}{N} \;\le\; F(N) \;\le\; \frac{\sigma(N)}{N}.
+\]
+\end{lemma}
+
+\begin{proof}
+Write $N=\prod p^{e_p}$. Both $F$ and $\sigma(\cdot)/\cdot$ factor over prime powers:
+\[
+\frac{\sigma(N)}{N} = \prod_{p^e\| N}\Big(1+\frac{1}{p}+\cdots+\frac{1}{p^e}\Big),
+\]
+and one can compute
+\[
+F(N) = \prod_{p^e\| N}\Big(1+\frac{1}{p}-\frac{1}{p^{e+1}}\Big).
+\]
+For each prime power,
+\[
+1+\frac{1}{p}-\frac{1}{p^{e+1}}
+\;\le\; 1+\frac{1}{p}+\cdots+\frac{1}{p^e},
+\]
+and also
+\begin{align*}
+1+\frac{1}{p}-\frac{1}{p^{e+1}}
+&= \Big(1+\frac{1}{p}+\cdots+\frac{1}{p^e}\Big) - \Big(\frac{1}{p^2}+\cdots+\frac{1}{p^{e+1}}\Big) \\
+&\ge \Big(1-\frac{1}{p^2}\Big)\Big(1+\frac{1}{p}+\cdots+\frac{1}{p^e}\Big).
+\end{align*}
+Multiplying over primes gives
+\[
+F(N) \;\ge\; \Big(\prod_{p\mid N}\big(1-\tfrac{1}{p^2}\big)\Big)\frac{\sigma(N)}{N}
+\;\ge\; \Big(\prod_{p}\big(1-\tfrac{1}{p^2}\big)\Big)\frac{\sigma(N)}{N}
+\;=\; \frac{6}{\pi^2}\,\frac{\sigma(N)}{N}. \qedhere
+\]
+\end{proof}
+
+\paragraph{Consequence for spike second moments.}
+\begin{itemize}
+\item For $a=m-1$: here $N=m-1$ and $x$ runs through $1,2,\dots,m-1$ exactly, so
+  \[
+  \frac{1}{m}\sum_{x=1}^{m-1} N_x(m-1)^2
+  = \frac{1}{m}\sum_{x=1}^{m-1}\gcd(x,m-1)^2
+  = \frac{(m-1)^2}{m}\,F(m-1)
+  = \Theta\!\big(\sigma(m-1)\big).
+  \]
+
+\item For $a=0$: $N=m+1$ but $x$ only runs up to $m-1=N-2$. Dropping the final two terms only changes the sum by $O(N^2)$, which becomes $O(m)$ after dividing by $m$. So
+  \[
+  \mathbb{E}[N_x(0)^2] = \Theta\!\big(\sigma(m+1)\big).
+  \]
+\end{itemize}
+
+Thus the \textbf{spike part of $\mathbb{E}[C]$} is
+\[
+\mathbb{E}\big[N_x(0)^2 + N_x(m-1)^2\big] = \Theta\!\big(\sigma(2^n+1)+\sigma(2^n-1)\big).
+\]
+
+\paragraph{Upper bound $O(m\log\log n)$ for the spike part.}
+A theorem of Erd\H{o}s~\cite{erdos1948} gives
+\[
+\sigma(2^n-1) \;\le\; c\,(2^n-1)\log\log n
+\quad\text{for large }n,
+\]
+for an absolute constant $c$.
+
+To also bound $\sigma(2^n+1)$, observe that
+\[
+2^{2n}-1 = (2^n-1)(2^n+1), \qquad \gcd(2^n-1,\,2^n+1)=1,
+\]
+so $\sigma(2^{2n}-1)=\sigma(2^n-1)\,\sigma(2^n+1)$. Applying the same bound at exponent $2n$ gives
+\[
+\sigma(2^{2n}-1) \le c'(2^{2n}-1)\log\log(2n),
+\]
+and since $\sigma(2^n-1)\ge 2^n-1$, we get
+\[
+\sigma(2^n+1) \le \frac{\sigma(2^{2n}-1)}{\sigma(2^n-1)} = O(2^n\log\log n).
+\]
+
+Therefore, unconditionally,
+\[
+\mathbb{E}\big[N_x(0)^2 + N_x(m-1)^2\big] = O(m\log\log n).
+\]
+
+\paragraph{Lower bound $\Omega(m\log\log n)$ for infinitely many $n$.}
+Take $n=t!$ and $m=2^n$. For every odd prime $p\le t$, we have $p-1\mid t!$, so by Fermat's little theorem $2^{t!}\equiv 1\pmod{p}$, hence $p\mid(2^{t!}-1)$.
+
+Thus $2^{t!}-1$ is divisible by $\prod_{p\le t}p$, so
+\[
+\frac{\sigma(2^{t!}-1)}{2^{t!}-1} \;\ge\; \prod_{p\le t}\Big(1+\frac{1}{p}\Big).
+\]
+Now
+\[
+\prod_{p\le t}\Big(1+\frac{1}{p}\Big)
+= \prod_{p\le t}\Big(1-\frac{1}{p^2}\Big)\cdot\prod_{p\le t}\Big(1-\frac{1}{p}\Big)^{-1}.
+\]
+Mertens' theorem says $\prod_{p\le t}(1-\frac{1}{p})\sim e^{-\gamma}/\log t$, i.e.\ the inverse grows like $e^\gamma\log t$. Also $\prod_{p\le t}(1-\frac{1}{p^2})$ stays bounded below by a positive constant (it converges to $6/\pi^2$). Hence
+\[
+\prod_{p\le t}\Big(1+\frac{1}{p}\Big) \;\ge\; c\,\log t
+\quad\text{for large }t,
+\]
+so
+\[
+\sigma(2^{t!}-1) \;\ge\; c\,(2^{t!}-1)\log t.
+\]
+Since $n=t!$, we have $\log\log n = \log\log(t!) = \Theta(\log t)$. Therefore
+\[
+\sigma(2^n-1) \;\ge\; c'\,2^n\log\log n
+\quad\text{for infinitely many }n,
+\]
+and since $\mathbb{E}[C]\ge \mathbb{E}[N_x(m-1)^2]=\Theta(\sigma(2^n-1))$, we get
+\[
+\mathbb{E}[C] = \Omega(m\log\log n)
+\quad\text{infinitely often.}
+\]
+
+\paragraph{Summary so far (rigorous).}
+\[
+\mathbb{E}[C] \;=\; \mathbb{E}[C^*] \;+\; O(m\log\log n),
+\]
+and also $\mathbb{E}[C]\ge \Omega(m\log\log n)$ along the subsequence $n=t!$.
+So the entire problem of a tight upper bound is now concentrated in $\mathbb{E}[C^*]$.
+
+%----------------------------------------------------------------------
+\subsection{Non-spike outputs: do repeating multipliers matter?}
+\label{sec:non-spike}
+
+Outside $\{0,m-1\}$, some $x$'s have noticeably larger fibers $N_x(a)$ (e.g.\ $x=0101\ldots$, which is $x=(m-1)/3$ when $n$ is even). The key point for the expectation is: \textbf{those multipliers form a tiny set}, so they cannot accumulate enough mass to change $\mathbb{E}[C]$ at the $m\log\log n$ scale.
+
+\paragraph{A.\ Any fixed-period family contributes only $O(m)$.}
+Fix a period $p$. There are at most $2^p$ $n$-bit strings with period $p$ (choose the length-$p$ template; the rest repeats). For each $x$,
+\[
+C(x) = \sum_a N_x(a)^2 \;\le\; \Big(\sum_a N_x(a)\Big)^{\!2} = m^2.
+\]
+So the total contribution of all period-$p$ multipliers to the expectation is
+\[
+\frac{1}{m}\sum_{\substack{x\text{ has}\\\text{period }p}} C(x) \;\le\; \frac{1}{m}\cdot 2^p \cdot m^2 \;=\; 2^p\,m.
+\]
+For constant $p$ (like $p=2$ for $0101\ldots$), this is $O(m)$, which is negligible compared to the spike term $m\log\log n$ once $n$ is large.
+
+\paragraph{B.\ The whole divisor family $x\mid(m-1)$ stays at $O(m\log\log n)$.}
+This is a more relevant ``big structured class,'' because periodic patterns like $0101\ldots$ are typically divisors of $m-1$ (or closely related).
+
+For any $x$, a trivial but useful bound is
+\[
+C(x) \le mx,
+\]
+since for $1\le x\le m-1$ we have $q=\lfloor xy/m\rfloor \in \{0,1,\ldots,x-1\}$, and for a fixed output
+$a=q\oplus r$ each choice of $q$ forces $r=a\oplus q$ and hence at most one $y$ solving $xy=mq+r$.
+Thus $N_x(a)\le x$, so $C(x)=\sum_a N_x(a)^2 \le (\max_a N_x(a))\sum_a N_x(a)\le x\cdot m$.
+so for the divisor family $x\mid(m-1)$,
+\[
+\frac{1}{m}\sum_{x\mid(m-1)} C(x) \;\le\; \frac{1}{m}\sum_{x\mid(m-1)} mx \;=\; \sigma(m-1) \;=\; O(m\log\log n),
+\]
+using Erd\H{o}s' bound on $\sigma(2^n-1)$~\cite{erdos1948}.
+
+So \textbf{even if every single divisor of $m-1$} had maximally bad non-spike behavior (it does not), its \emph{total} effect on $\mathbb{E}[C]$ cannot exceed the same $O(m\log\log n)$ scale that the spike already forces.
+
+%----------------------------------------------------------------------
+\subsection{What remains for bounding \texorpdfstring{$\mathbb{E}[C]$}{E[C]}}
+\label{sec:mum-remaining}
+
+The sharp part of the expectation is now cleanly isolated:
+\begin{itemize}
+\item The \textbf{only provably growing term} is the spike contribution, and it is
+  \[
+  \Theta\!\big(\sigma(2^n-1)+\sigma(2^n+1)\big) = O(m\log\log n),
+  \]
+  with a matching $\Omega(m\log\log n)$ lower bound infinitely often.
+
+\item Repeating multipliers and similar structured classes are provably too sparse to change the leading scale of $\mathbb{E}[C]$.
+\end{itemize}
+
+To obtain a full $\mathbb{E}[C]=O(m\log\log n)$ upper bound, the missing ingredient is:
+\begin{quote}
+Show $\mathbb{E}[C^*]=O(m)$ (or at least $O(m\log\log n)$).
+\end{quote}
+Empirically $\mathbb{E}[C^*]/m$ appears bounded (it hovers around a small constant for all small $n$), but proving it seems to require a genuine ``mixing'' statement: roughly, that for typical $x$, the non-spike outputs behave like a near-random mapping, so $\sum_{a\ne 0,m-1}N_x(a)^2$ stays $\Theta(m)$.
+
+% Empirical / image-size perspective on the same primitive.
+\input{sections/appendix_folded_multiply}

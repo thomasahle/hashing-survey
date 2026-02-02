@@ -1,0 +1,81 @@
+% Empirical appendix for folded multiply.
+
+\subsection{Empirics for folded multiply}
+\label{sec:appendix-folded-multiply}
+
+The operation $\operatorname{op}(x,y)=\lfloor xy/m\rfloor \oplus (xy\bmod m)$ can also be viewed,
+for fixed $x$, as a map $f_x:\{0,\ldots,m-1\}\to\{0,\ldots,m-1\}$.
+We write $m(x)=|\mathrm{Im}(f_x)|$ for its image size.
+
+\paragraph{Image size versus collisions.}
+If a function $f$ on an $m$-element domain has image size $M$, then (writing
+$C^\mathrm{pairs}=\#\{(a,b):0\le a<b<m,\ f(a)=f(b)\}$) one has
+\[
+  C^\mathrm{pairs} \ge \frac{1}{2}\left(\frac{m^2}{M}-m\right).
+\]
+In terms of the ordered-pair statistic used above,
+$C(x)=\sum_a N_x(a)^2 = m + 2C^\mathrm{pairs}$.
+
+\paragraph{Variants compared.}
+We compare four closely related fold constructions (all returning a $\ut{n}$ value):
+\[
+  \texttt{nmul\_xor}: \ \mathrm{lo}(xa)\oplus \mathrm{hi}(xa),
+  \quad
+  \texttt{nmul\_add}: \ (\mathrm{lo}(xa)+\mathrm{hi}(xa))\bmod 2^n,
+\]
+where $xa$ is ordinary integer multiplication, and
+\[
+  \texttt{cmul\_xor}: \ \mathrm{lo}(x\otimes a)\oplus \mathrm{hi}(x\otimes a),
+  \quad
+  \texttt{cmul\_add}: \ (\mathrm{lo}(x\otimes a)+\mathrm{hi}(x\otimes a))\bmod 2^n,
+\]
+where $x\otimes a$ is carryless (polynomial) multiplication over $\mathbb{F}_2$.
+
+\paragraph{Field baselines.}
+In a true field, multiplication by $x\ne 0$ is a permutation, hence has no collisions.
+Therefore, for any field of size $N$,
+\[
+  \mathbb{E}_{x}[C_x] = \frac{1}{N}\binom{N}{2} = \frac{N-1}{2},
+  \qquad
+  \mathbb{E}_{x}[C_x]/N \approx \frac{1}{2}.
+\]
+In the plots below we include two baselines: \texttt{gf2n\_field} (a field of size $2^n$, for any
+irreducible polynomial of degree $n$) and \texttt{prime\_field} (multiplication modulo the largest
+prime $p \le 2^n$).
+
+\paragraph{Carryless \texttt{cmul\_xor} admits an exact collision formula.}
+For carryless multiplication, the map $a \mapsto \mathrm{lo}(x\otimes a)\oplus \mathrm{hi}(x\otimes a)$
+is multiplication by $x$ in the ring $\mathbb{F}_2[t]/(t^n+1)$. Writing $g=\gcd(x,\,t^n+1)$ and
+$d=\deg(g)$, one has $|\ker f_x|=2^d$, $m(x)=2^{n-d}$, and
+\[
+  C_x = 2^{n-1}(2^d-1).
+\]
+This explains the strong $n$-dependence seen for \texttt{cmul\_xor}.
+
+\paragraph{Empirical results.}
+Figure~\ref{fig:folded-multiply-collisions} shows $\mathbb{E}[C_x]$ and its normalized version
+$\mathbb{E}[C_x]/2^n$ for all variants. For \texttt{nmul\_xor} we observe an approximately constant
+factor $\mathbb{E}[C_x]/2^n \approx 1.5$--$2.2$ for $n \le 15$ (exact enumeration); for $n>15$ we
+estimate using Monte Carlo sampling over multipliers $x$.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{scripts/folded_multiply/out/expected_collisions_variants.png}
+  \caption{Expected collision pairs $\mathbb{E}[C_x]$ (top) and normalized constant
+  $\mathbb{E}[C_x]/2^n$ (bottom) for folded multiply variants.}
+  \label{fig:folded-multiply-collisions}
+\end{figure}
+
+\paragraph{Achievable \texorpdfstring{$(\delta,\varepsilon)$}{(delta,epsilon)} frontier.}
+Define the image-size threshold $M(\delta)=2^{(1-\delta)n}$ and the ``bad multiplier'' event
+$m(x)\le M(\delta)$. Let $p_n(\delta)=\Pr_x[m(x)\le M(\delta)]$. The plot in
+Figure~\ref{fig:folded-multiply-frontier} shows $p_n(\delta)$ using the more stable $x$-axis
+$\Delta=\delta n$ (bits below $n$), which aligns curves across $n$.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{scripts/folded_multiply/out/delta_n_fraction_frontier_log.png}
+  \caption{Fraction of multipliers with small image: $p_n(\delta)=\Pr_x[m(x)\le 2^{n-\Delta}]$,
+  plotted against $\Delta=\delta n$ on a log-$y$ scale (exhaustive for $n\le 15$, sampled after).}
+  \label{fig:folded-multiply-frontier}
+\end{figure}

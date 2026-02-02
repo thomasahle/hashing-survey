@@ -1,0 +1,252 @@
+%=============================================================================
+\section{xxHash Family}
+%=============================================================================
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/xxhash.cpp}{\texttt{hashes/xxhash.cpp}}~\cite{xxhash}.
+
+xxHash uses prime constants $s_1, \ldots, s_5$ selected by empirical testing for
+avalanche properties. The primes have roughly half their bits set and avoid
+degenerate bit patterns. For xxHash64:
+\begin{align*}
+s_1 &= \texttt{0x9E3779B185EBCA87} & s_2 &= \texttt{0xC2B2AE3D27D4EB4F} \\
+s_3 &= \texttt{0x165667B19E3779F9} & s_4 &= \texttt{0x85EBCA77C2B2AE63} \\
+s_5 &= \texttt{0x27D4EB2F165667C5}
+\end{align*}
+The 32-bit versions use corresponding 32-bit primes.
+
+\subsection{Round Functions}
+
+\subsubsection{Multiply-Rotate Round}
+\label{sec:xxhash-round}
+
+The xxHash round function mixes input into an accumulator:
+
+\begin{equation}
+\textsc{Round}(v, x) = \Rot{r}{v + x \cdot s_2} \cdot s_1
+\end{equation}
+where $r = 13$ for 32-bit, $r = 31$ for 64-bit. This is an ARX variant
+using multiplication instead of XOR for the final mix.
+
+\subsubsection{Merge Round (xxHash64)}
+\label{sec:merge}
+
+After the main loop, xxHash64 merges each accumulator into the hash:
+\begin{equation}
+\textsc{Merge}(h, v) = (h \oplus \textsc{Round}(0, v)) \cdot s_1 + s_4
+\end{equation}
+This ``rounds'' the accumulator value, XORs it into the hash, then applies
+another multiply-add for diffusion.
+
+\paragraph{SMHasher3 test results.}
+None of the xxHash variants pass the full SMHasher3 test battery.
+xxHash32 fails 83 of 250 tests, including numerous Sparse, Permutation, and
+seed-sensitivity tests (SeedBlockLen, SeedBlockOffset, SeedBIC, SeedBitflip),
+reflecting the limited mixing of its 32-bit multiply-rotate round.
+xxHash64 fares much better, failing only 9 tests, all seed-related
+(SeedBlockLen, SeedBlockOffset, SeedBIC).
+XXH3 (64-bit) fails 27 of 250 tests: BIC, Sparse, PerlinNoise, and Bitflip tests
+expose weaknesses in the non-seeded path, while SeedZeroes produces 571 full
+64-bit collisions (expected 0) on keys up to 1280 bytes with low-weight seeds---a
+consequence of XXH3's seeding mechanism, which adds $\pm\mathit{seed}$ to the
+secret and thus maps $\mathit{seed}=0$ and any seed that leaves all
+relevant secret words unchanged to identical output.
+
+\subsection{xxHash32}
+
+\begin{algorithmic}[1]
+\State $v_0 \gets \mathit{seed} + s_1 + s_2$
+\State $v_1 \gets \mathit{seed} + s_2$
+\State $v_2 \gets \mathit{seed}$
+\State $v_3 \gets \mathit{seed} - s_1$
+\If{$n \geq 16$}
+    \For{each block $(x_0, x_1, x_2, x_3)\in \ut{32}^4$} \Comment{Main loop: 4 parallel lanes}
+        \For{$i \in \{0,\ldots,3\}$}
+            \State $v_i \gets \Round(v_i, x_i)$
+        \EndFor
+    \EndFor
+    \State $v_4 \gets \Rot{1}{v_0} + \Rot{7}{v_1} + \Rot{12}{v_2} + \Rot{18}{v_3}$
+\Else
+    \State $v_4 \gets \mathit{seed} + s_5$
+\EndIf
+\State $v_4 \gets v_4 + n$
+\For{each remaining $x_i \in \ut{32}$}
+    \State $v_4 \gets \Rot{17}{v_4 + x_i \cdot s_3} \cdot s_4$
+\EndFor
+\For{each remaining $x_i \in \ut{8}$}
+    \State $v_4 \gets \Rot{11}{v_4 + x_i \cdot s_5} \cdot s_1$
+\EndFor
+\State \Return $\hyperref[fn:xxh32-avalanche]{\textsc{XXH32\_avalanche}}(v_4)$
+\end{algorithmic}
+
+\paragraph{XXH32\_avalanche:}\phantomsection\label{fn:xxh32-avalanche} xxHash32 finalizer (an \textsc{XMS} cascade):
+\begin{equation}
+\textsc{XXH32\_avalanche}(h) = \Xorshift{16}\!\left(\textsc{XMS}_{13,s_3^{32}}\!\left(\textsc{XMS}_{15,s_2^{32}}(h)\right)\right)
+\end{equation}
+
+\subsection{xxHash64}
+
+Same structure as xxHash32 with 64-bit words, $r=31$, and 32-byte blocks.
+
+\begin{algorithmic}[1]
+\State $v_0 \gets \mathit{seed} + s_1 + s_2$
+\State $v_1 \gets \mathit{seed} + s_2$
+\State $v_2 \gets \mathit{seed}$
+\State $v_3 \gets \mathit{seed} - s_1$
+\If{$n \geq 32$}
+    \For{each block $(x_0, x_1, x_2, x_3)\in \ut{64}^4$} \Comment{Main loop: 4 parallel lanes}
+        \For{$i \in \{0,\ldots,3\}$}
+            \State $v_i \gets \Round(v_i, x_i)$
+        \EndFor
+    \EndFor
+    \State $v_4 \gets \Rot{1}{v_0} + \Rot{7}{v_1} + \Rot{12}{v_2} + \Rot{18}{v_3}$
+    \For{$i \in \{0,\ldots,3\}$}
+        \State $v_4 \gets \Merge(v_4, v_i)$
+    \EndFor
+\Else
+    \State $v_4 \gets \mathit{seed} + s_5$
+\EndIf
+\State $v_4 \gets v_4 + n$
+\For{each remaining $x_i \in \ut{64}$}
+    \State $v_4 \gets \Rot{27}{v_4 \oplus \Round(0, x_i)} \cdot s_1 + s_4$
+\EndFor
+\For{each remaining $x_i \in \ut{32}$}
+    \State $v_4 \gets \Rot{23}{v_4 \oplus (x_i \cdot s_1)} \cdot s_2 + s_3$
+\EndFor
+\For{each remaining $x_i \in \ut{8}$}
+    \State $v_4 \gets \Rot{11}{v_4 \oplus (x_i \cdot s_5)} \cdot s_1$
+\EndFor
+\State \Return $\hyperref[fn:xxh64-avalanche]{\textsc{XXH64\_avalanche}}(v_4)$
+\end{algorithmic}
+
+\paragraph{XXH64\_avalanche:}\phantomsection\label{fn:xxh64-avalanche} xxHash64 finalizer:
+\begin{equation}
+\textsc{XXH64\_avalanche}(h) = \Xorshift{32}\!\left(\textsc{XMS}_{29,s_3}\!\left(\textsc{XMS}_{33,s_2}(h)\right)\right)
+\end{equation}
+
+\subsection{XXH3}
+\label{sec:xxh3}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/xxhash.cpp}{\texttt{hashes/xxhash.cpp}}.
+
+XXH3 (2019) uses a 192-byte secret $S$ (pseudorandom bytes from FARSH; seeded variant adds
+$\pm\mathit{seed}$ to alternating 8-byte blocks). The 32$\times$32 multiply has native SIMD
+support (unlike 64$\times$64). Original input is added to accumulators to prevent multiply-by-zero
+weakness. Six distinct code paths optimize for different input sizes; short keys ($n \leq 240$)
+use specialized scalar paths with 64$\times$64 MUM. We summarize those special cases and focus on the long-key path.
+
+\paragraph{Long Keys ($n > 240$).}
+\label{sec:xxh3-long}
+Uses 8 parallel 64-bit accumulators with UMAC-inspired structure.
+
+\paragraph{Accumulate (per 64-byte stripe).}
+
+One stripe feeds 8 input words into 4 lane pairs.
+Within each pair, the two lanes cross-pollinate: the raw input of each lane
+is added to the \emph{other} lane's accumulator, hardening against multiply-by-zero.
+
+\begin{center}
+\begin{tikzpicture}[
+    >=Latex,
+    var/.style={font=\small},
+    mul/.style={circle, draw, fill=blue!15, minimum size=0.7cm, font=\tiny, align=center},
+    xornode/.style={circle, draw, minimum size=0.45cm, font=\scriptsize}
+]
+% Column positions
+\def\colL{0}
+\def\colR{4.4}
+
+% === Row 0: Inputs ===
+\node[var] (sL) at (\colL, 0) {$s^*_i$};
+\node[var] (yL) at (\colL+1.6, 0) {$y_i$};
+\node[var] (yR) at (\colR, 0) {$y_{i+1}$};
+\node[var] (sR) at (\colR+1.6, 0) {$s^*_{i+1}$};
+
+% === Row 1: XOR with secret ===
+\node[xornode] (xorL) at (\colL+0.8, -1.0) {$\oplus$};
+\node[xornode] (xorR) at (\colR+0.8, -1.0) {$\oplus$};
+\draw (yL) -- (xorL);
+\draw (sL) -- (xorL);
+\draw (yR) -- (xorR);
+\draw (sR) -- (xorR);
+
+\node (xorLsouth) at (\colL+0.8, -1.7) {};
+\node (xorRsouth) at (\colR+0.8, -1.7) {};
+\draw (xorL) -- (xorLsouth);
+\draw (xorR) -- (xorRsouth);
+
+% === Row 2: Split in Lo/Hi 32 ===
+\node[font=\scriptsize] (loL) at (\colL+0.4, -2.3) {Lo32};
+\node[font=\scriptsize] (hiL) at (\colL+1.2, -2.3) {Hi32};
+\node[font=\scriptsize] (loR) at (\colR+0.4, -2.3) {Lo32};
+\node[font=\scriptsize] (hiR) at (\colR+1.2, -2.3) {Hi32};
+\draw (xorLsouth) -- (loL);
+\draw (xorLsouth) -- (hiL);
+\draw (xorRsouth) -- (loR);
+\draw (xorRsouth) -- (hiR);
+
+% === Row 3: 32x32 multiply ===
+\node[mul] (mulL) at (\colL+0.8, -3.3) {$\times$};
+\node[mul] (mulR) at (\colR+0.8, -3.3) {$\times$};
+\draw (loL) -- (mulL);
+\draw (hiL) -- (mulL);
+\draw (loR) -- (mulR);
+\draw (hiR) -- (mulR);
+
+% === Row 4: Add multiply result ===
+\node[xornode] (addL) at (\colL+0.8, -4.5) {$+$};
+\node[xornode] (addR) at (\colR+0.8, -4.5) {$+$};
+\draw (mulL) -- (addL);
+\draw (mulR) -- (addR);
+
+% === Cross-pollination: raw input to other lane ===
+\draw[densely dashed] (yL) -- (addR);
+\draw[densely dashed] (yR) -- (addL);
+
+% === Row 5: Outputs ===
+\node[var] (vL2) at (\colL+0.8, -5.5) {$v'_i$};
+\node[var] (vR2) at (\colR+0.8, -5.5) {$v'_{i+1}$};
+\draw (addL) -- (vL2);
+\draw (addR) -- (vR2);
+
+% Lane labels
+\node[font=\scriptsize, anchor=south] at (\colL+0.8, 0.4) {Lane $i$};
+\node[font=\scriptsize, anchor=south] at (\colR+0.8, 0.4) {Lane $i{+}1$};
+
+% Side label
+\node[font=\scriptsize, anchor=west] at (6.5, -2.3) {$\times 4$ pairs};
+\node[font=\scriptsize, anchor=west] at (6.5, -2.8) {per stripe};
+\node[font=\scriptsize, anchor=west] at (6.5, -4.5) {cross-pollination};
+\end{tikzpicture}
+\end{center}
+
+\noindent\textbf{Key insight}: The 32$\times$32$\to$64 multiply (not 64$\times$64!) enables efficient SIMD:
+SSE2/AVX2 have \texttt{\_mm\_mul\_epu32} for this operation. The cross-lane addition
+of original input (dashed lines) hardens against multiply-by-zero.
+
+\begin{algorithmic}[1]
+\State Initialize $(v_0, \ldots, v_7) \gets (s_3^{32}, s_1^{64}, s_2^{64}, s_3^{64}, s_4^{64}, s_2^{32}, s_5^{64}, s_1^{32})$
+\State Let $s^{\mathrm{end}}_0, \ldots, s^{\mathrm{end}}_7$ be eight 64-bit secret words from the end of $S^\star$
+\State Let $s^{\mathrm{m}}_0, \ldots, s^{\mathrm{m}}_7$ be eight 64-bit secret words from $S^\star$ at byte offset 11
+\For{each block $(x_i)_{i=0}^{127} \in \ut{64}^{128}$} \Comment{1024 bytes = 16 stripes}
+    \For{$j \in \{0, \ldots, 15\}$} \Comment{Stripe $j$ (64 bytes)}
+        \State $(y_0,\ldots,y_7) \gets (x_{8j},\ldots,x_{8j+7})$
+        \State Let $(s^*_0,\ldots,s^*_7)\in \ut{64}^8$ be the secret words for stripe $j$
+        \For{$i \in \{0,\ldots,7\}$}
+            \State $t \gets y_i \oplus s^*_i$ \Comment{32$\times$32 multiply of two halves (not MUM)}
+            \State $v_i \gets v_i + (\textsc{Lo32}(t)\cdot \textsc{Hi32}(t))$
+            \State $v_{i \oplus 1} \gets v_{i \oplus 1} + y_i$ \Comment{Cross-pollination: raw input}
+        \EndFor
+    \EndFor
+    \For{$i \in \{0, \ldots, 7\}$} \Comment{Scramble accumulators}
+        \State $v_i \gets (v_i \oplus (v_i \gg 47) \oplus s^{\mathrm{end}}_i) \cdot s_1^{32}$
+    \EndFor
+\EndFor
+\State Handle remaining bytes (short/medium paths summarized)
+\State $v \gets n \cdot s_1^{64}$ \Comment{Merge accumulators}
+\For{$i \in \{0,2,4,6\}$}
+    \State $v \gets v + \Mum(v_{i} \oplus s^{\mathrm{m}}_{i},\, v_{i+1} \oplus s^{\mathrm{m}}_{i+1})$
+\EndFor
+\State $v \gets v \oplus (v \gg 37)$ \Comment{Finalization (xorshift/multiply avalanche)}
+\State $v \gets v \cdot \texttt{0x165667919E3779F9}$
+\State \Return $v \oplus (v \gg 32)$
+\end{algorithmic}

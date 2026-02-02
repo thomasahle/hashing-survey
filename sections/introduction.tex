@@ -1,0 +1,64 @@
+%=============================================================================
+\section{Introduction}
+%=============================================================================
+
+Non-cryptographic hash functions are fundamental building blocks in computer
+science, used extensively in hash tables, checksums, and probabilistic data structures.
+This survey documents hash functions implemented in SMHasher3, presenting algorithms
+with clear pseudocode and analyzing their mixing properties.
+
+\subsection{Performance Overview}
+
+Table~\ref{tab:perf-bulk} shows performance measurements for the hash functions surveyed
+in this paper, from the SMHasher3 test suite, sorted by bulk throughput.
+Hashes marked with \xmark{} do not pass the full test battery; the number in
+parentheses is the count of tests passed out of 250.
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Hash & Bits & B/cycle (bulk) & Cycles (1--32\,B) & Pass \\
+\midrule
+AquaHash$^*$  & 64  & 15.99 & 34.31 & \xmark\,(195) \\
+XXH3$^*$      & 64  & 12.95 & 30.69 & \xmark\,(223) \\
+MeowHash      & 128 & 12.43 & 61.51 & \cmark \\
+rapidhash     & 64  &  8.82 & 30.41 & \cmark \\
+CLHash$^*$    & 64  &  7.38 & 48.19 & \xmark\,(64) \\
+MuseAir       & 64  &  7.19 & 28.45 & \cmark \\
+wyhash$^*$    & 64  &  7.11 & 29.31 & \xmark\,(235) \\
+HalftimeHash$^*$ & 128 & 6.92 & 95.58 & \xmark\,(202) \\
+komihash      & 64  &  6.24 & 32.62 & \cmark \\
+ChibiHash     & 64  &  6.15 & 34.53 & \cmark \\
+UMASH$^*$     & 64  &  6.09 & 41.74 & \xmark\,(122) \\
+aHash         & 64  &  4.52 & 29.14 & \cmark \\
+SpookyHash    & 32  &  4.40 & 60.20 & \cmark \\
+Polymur       & 64  &  4.02 & 42.57 & \cmark \\
+xxHash64$^*$  & 64  &  4.00 & 52.61 & \xmark\,(241) \\
+khashv        & 64  &  3.20 & 56.17 & \cmark \\
+a5hash        & 64  &  2.63 & 26.91 & \cmark \\
+FarmHash      & 128 &  2.61 & 69.61 & \cmark \\
+xxHash32$^*$  & 32  &  2.00 & 44.38 & \xmark\,(167) \\
+Rainbow       & 64  &  1.28 & 61.63 & \cmark \\
+prvhash       & 64  &  0.94 & 51.07 & \cmark \\
+XMSX          & 32  &  0.67 & 42.56 & \cmark \\
+poly-mersenne & 32  &  0.50 & 69.79 & \cmark \\
+HalfSipHash   & 32  &  0.34 & 81.75 & \cmark \\
+SipHash-2-4   & 64  &  0.32 & 152.26 & \cmark \\
+\bottomrule
+\end{tabular}
+\caption{Performance sorted by bulk throughput (bytes/cycle). $^*$Does not pass the full
+SMHasher3 test battery; see individual sections for details.}
+\label{tab:perf-bulk}
+\end{table}
+
+\paragraph{Two performance regimes.}
+Hash performance differs dramatically between short and long keys:
+\begin{itemize}
+\item \textbf{Short keys (1--32 bytes):} Latency-bound. Specialized code paths avoid
+loop overhead. The best hashes achieve $\sim$26--31 cycles total.
+\item \textbf{Bulk throughput:} Bandwidth-bound. Parallel lanes and wide reads dominate.
+The best MUM-based hashes achieve 7--9 bytes/cycle; AES-based hashes (MeowHash) reach $\sim$12 bytes/cycle.
+\end{itemize}
+

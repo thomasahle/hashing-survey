@@ -1,0 +1,148 @@
+%=============================================================================
+\section{SIMD-Scalable Hashes}
+%=============================================================================
+
+\subsection{HalftimeHash}
+\label{sec:halftimehash}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/halftimehash.cpp}{\texttt{hashes/halftimehash.cpp}}~\cite{halftimehash}.
+
+\paragraph{SMHasher3 test results.}
+HalftimeHash-128 fails 48 of 250 tests.
+The dominant failure category is Sparse (27 configurations including long-key variants),
+followed by Permutation (single-bit and low-bit keys) and SeedZeroes.
+As a keyed hash requiring ${\sim}50$\,KB of random state, the SeedZeroes failures reflect
+SMHasher3's seed model rather than a design flaw.
+
+HalftimeHash by Jim Apple is a SIMD-scalable hash that efficiently uses any vector width
+(64-bit scalar to 512-bit AVX-512). Based on erasure coding theory for provable mixing
+properties. Uses 32-bit multiplies (\texttt{\_mm\_mul\_epu32}), a tree structure for long
+inputs, and requires $\sim$50KB of random state.
+
+The core mixing uses $\textsc{Times}(a, b) = (a \land \texttt{0xFFFFFFFF}) \times (b \land \texttt{0xFFFFFFFF})$
+within 64-bit lanes. The Mix function computes
+$v + \textsc{Times}(t, t \gg 32)$
+where $t = s +_{32} x$ (independent 32-bit lane addition, no carry between halves).
+
+Erasure coding (like RAID) achieves strong mixing: input blocks are encoded with redundancy
+(e.g., Encode2: $6 \to 7$ blocks), then reduced using weighted sums.
+	For long inputs, a tree structure with fanout 8 combines block groups via depth-first traversal.
+	Style variants select block size: Style64 (scalar), Style128 (SSE2/NEON), Style256 (AVX2), Style512 (AVX-512).
+	Output is finalized using byte-level tabulation:
+	$\mathit{result} = \textsc{TabulateBytes}(n) \oplus \bigoplus_{j} \textsc{TabulateBytes}(h_j)$,
+	where $(h_j)$ are the final 64-bit output words for the chosen variant.
+
+\begin{algorithmic}[1]
+\phantomsection\label{fn:halftime-mix}%
+\Function{Mix}{$v, x, s$} \Comment{Core mixing per block}
+    \State $t \gets s +_{32} x$ \Comment{32-bit lane addition}
+    \State \Return $v + \textsc{Times}(t, t \gg 32)$ \Comment{$\textsc{Times}$: 32$\times$32 low-half multiply}
+\EndFunction
+\phantomsection\label{fn:halftime-combine}%
+\Function{Combine}{$u_0,\ldots,u_{d'-1}$} \Comment{Fixed linear reducer (variant-specific)}
+    \State Compute $(y_0,\ldots,y_{L-1})$ as weighted sums (dot products) of the $u_i$
+    \State \Return $(y_0,\ldots,y_{L-1})$
+\EndFunction
+\phantomsection\label{fn:halftime-baselayer}%
+\Function{BaseLayer}{input block group, $s$}
+    \State Encode $d$ input blocks into $d'$ blocks via erasure code (XOR-based)
+    \State Hash each encoded block into one value $u_i$ using repeated \hyperref[fn:halftime-mix]{\textsc{Mix}} (details elided)
+    \State \Return $\hyperref[fn:halftime-combine]{\textsc{Combine}}(u_0,\ldots,u_{d'-1})$
+\EndFunction
+\phantomsection\label{fn:halftime-upperlayer}%
+\Function{UpperLayer}{$(u^{(0)}_0,\ldots,u^{(0)}_{L-1}),\ldots,(u^{(7)}_0,\ldots,u^{(7)}_{L-1}), s$}
+    \For{$i \in \{0,\ldots,L-1\}$}
+        \State $y_i \gets u^{(0)}_i$
+        \For{$j \in \{1,\ldots,7\}$}
+            \State $y_i \gets \hyperref[fn:halftime-mix]{\textsc{Mix}}(y_i, u^{(j)}_i, s_{i,j})$
+        \EndFor
+    \EndFor
+    \State \Return $(y_0,\ldots,y_{L-1})$
+\EndFunction
+\phantomsection\label{fn:halftime-tabulatebytes}%
+\Function{TabulateBytes}{$x, T$} \Comment{$T$ is an 8$\times$256 table}
+    \State $r \gets 0$
+    \For{$i \in \{0,\ldots,7\}$}
+        \State $r \gets r \oplus T[i][\mathit{byte}_i(x)]$
+    \EndFor
+    \State \Return $r$
+\EndFunction
+\State
+\State Let $L \in \{2,3,4,5\}$ be the number of output words (variant-specific)
+\State $\mathit{stack}[0 \ldots 8]$ $\gets$ empty \Comment{Tree with fanout 8; each entry is a tuple in $\ut{w}^L$}
+\For{each block group in input}
+    \State $(y_0,\ldots,y_{L-1}) \gets \hyperref[fn:halftime-baselayer]{\textsc{BaseLayer}}(\text{block group}, s)$
+    \State Push $(y_0,\ldots,y_{L-1})$ onto $\mathit{stack}[0]$
+    \State $\ell \gets 0$
+    \While{$|\mathit{stack}[\ell]| = 8$} \Comment{Collapse full levels}
+        \State $(y_0,\ldots,y_{L-1}) \gets \hyperref[fn:halftime-upperlayer]{\textsc{UpperLayer}}(\mathit{stack}[\ell], s)$
+        \State Clear $\mathit{stack}[\ell]$; push $(y_0,\ldots,y_{L-1})$ onto $\mathit{stack}[\ell+1]$
+        \State $\ell \gets \ell + 1$
+    \EndWhile
+\EndFor
+\State Initialize accumulators $a_0,\ldots,a_{L-1} \gets 0$
+\State Let $T^{(0)},\ldots,T^{(L)}$ be 8$\times$256 tables derived from entropy ($T^{(0)}$ for length, $T^{(i+1)}$ for $h_i$)
+\State Mix remaining stack tuples and remaining input blocks into $(a_0,\ldots,a_{L-1})$ using \hyperref[fn:halftime-mix]{\textsc{Mix}} (tail summarized)
+\State Reduce each accumulator block by summing its 64-bit lanes: $h_i \gets \sum \text{lanes}(a_i)$
+\State $r \gets \hyperref[fn:halftime-tabulatebytes]{\textsc{TabulateBytes}}(n, T^{(0)})$
+\For{$i \in \{0,\ldots,L-1\}$}
+    \State $r \gets r \oplus \hyperref[fn:halftime-tabulatebytes]{\textsc{TabulateBytes}}(h_i, T^{(i+1)})$
+\EndFor
+\State \Return $r$
+\end{algorithmic}
+
+\subsection{khashv}
+\label{sec:khashv}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/khashv.cpp}{\texttt{hashes/khashv.cpp}}~\cite{khashv}.
+
+By Keith-Cancel. A vectorizable hash using S-box byte substitution and SIMD-friendly
+shuffles that map to \texttt{pshufb} (SSSE3+). Uses no multiplication---only add, XOR,
+rotate, and table lookup. Endian-independent with compact 128-bit state (four 32-bit words,
+initialized from SHA-256 hashes of bytes 1--4).
+
+Non-linear mixing uses a nibble-decomposed S-box (similar to AES SubBytes), and
+$\textsc{shuffle}$ applies fixed byte permutation $(7,14,9,0,12,15,13,8,5,11,6,3,4,2,10,1)$.
+
+\paragraph{Primitives.}
+Two 16-byte lookup tables $S_1, S_2$ define the S-box:
+\phantomsection\label{fn:khashv-sbox}%
+\phantomsection\label{fn:khashv-rotr5}%
+\phantomsection\label{fn:khashv-shuffle}%
+\phantomsection\label{fn:khashv-mixwords}%
+\begin{algorithmic}[1]
+\Function{sbox}{$x$} \Comment{128-bit $\to$ 128-bit, applied per byte}
+    \For{each byte $b$ in $x$}
+        \State $b \gets S_1[b \land \texttt{0xF}] \oplus S_2[b \gg 4]$ \Comment{Low/high nibble lookup + XOR}
+    \EndFor
+    \State \Return $x$
+\EndFunction
+\Function{rotr5}{$v$} \Comment{Rotate 16-byte state right by 5 bytes}
+    \State \Return bytes of $v$ permuted: $b_i \gets b_{(i+5) \bmod 16}$
+\EndFunction
+\Function{shuffle}{$v$} \Comment{Fixed byte permutation (\texttt{pshufb}-style)}
+    \State \Return bytes of $v$ permuted: $b_i \gets b_{\pi(i)}$ where $\pi=(7,14,9,0,12,15,13,8,5,11,6,3,4,2,10,1)$
+\EndFunction
+\Function{mix\_words}{$v$} \Comment{Finalization: operates on 32-bit words}
+    \State $v \gets v \oplus (v \gg_{32} 3)$ \Comment{Shift each 32-bit word right by 3, XOR back}
+    \For{$r \in (5,\, 7,\, 11,\, 17)$}
+        \State $t \gets \hyperref[fn:khashv-rotr5]{\textsc{rotr5}}(v) + v$
+        \State $v \gets v \oplus \Rot{r}{t}$ \Comment{Rotate each 32-bit word right by $r$}
+    \EndFor
+    \State \Return $v$
+\EndFunction
+\end{algorithmic}
+
+\paragraph{khashv Algorithm.}
+\begin{algorithmic}[1]
+\State $v \gets \mathit{seed}$ \Comment{128-bit state: four 32-bit words $(v_0, v_1, v_2, v_3)$}
+\State $v_0 \gets v_0 \oplus (n \bmod 2^{32})$; \quad $v_1 \gets v_1 \oplus (n \gg 32)$
+\For{each block $x \in \ut{128}$}
+    \State $t \gets \hyperref[fn:khashv-sbox]{\textsc{sbox}}(x)$
+    \State $v \gets v \oplus (t \cdot 8193)$ \Comment{$8193 = 2^{13}+1$}
+    \State $v \gets \hyperref[fn:khashv-rotr5]{\textsc{rotr5}}(v) + t$
+    \State $v \gets v + \hyperref[fn:khashv-shuffle]{\textsc{shuffle}}(v)$
+\EndFor
+\State $v \gets \hyperref[fn:khashv-mixwords]{\textsc{mix\_words}}(v)$
+\State \Return $v_3$ (32-bit) or $(v_0, v_1)$ (64-bit)
+\end{algorithmic}

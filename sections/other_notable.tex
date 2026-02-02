@@ -1,0 +1,366 @@
+%=============================================================================
+\section{Other Notable Hashes}
+%=============================================================================
+
+%-----------------------------------------------------------------------------
+\subsection{ARX-Based Hashes}
+%-----------------------------------------------------------------------------
+
+These hashes use Add-Rotate-XOR primitives without multiplication in their
+main loops, relying on superscalar execution for parallelism.
+
+\subsubsection{SpookyHash}
+\label{sec:spookyhash}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/spookyhash.cpp}{\texttt{hashes/spookyhash.cpp}}~\cite{spookyhash}.
+
+By Bob Jenkins (creator of lookup3). A 128-bit ARX hash using 12 parallel
+64-bit lanes with 96-byte blocks. Version 2 is most commonly used.
+
+\paragraph{Mix Function.}\phantomsection\label{fn:spooky-mix}
+The Mix function updates 12 state variables with 12 input words simultaneously.
+Each line combines: word addition, cross-lane XOR, self-XOR, rotation, and
+accumulation into adjacent lane. Rotations are: 11, 32, 43, 31, 17, 28, 39, 57, 55, 54, 22, 46.
+
+\begin{center}
+\begin{tikzpicture}[
+    >=Latex,
+    node distance=0.4cm,
+    state/.style={rectangle, draw, minimum width=0.5cm, minimum height=0.4cm, font=\scriptsize},
+    op/.style={circle, draw, minimum size=0.3cm, font=\tiny, inner sep=0pt}
+]
+% Show the pattern for one iteration
+\node[font=\small] at (0, 1.2) {Pattern for each lane $i$:};
+\node[state] (si) at (-1.5, 0.4) {$v_i$};
+\node[state] (xi) at (-0.3, 0.4) {$x_i$};
+\node[op] (add) at (-0.9, -0.2) {$+$};
+\draw[->] (si) -- (add);
+\draw[->] (xi) -- (add);
+
+\node[state] (sj) at (0.8, 0.4) {$v_{j}$};
+\node[op] (xor1) at (0.8, -0.2) {$\oplus$};
+\draw[->] (add) -- (xor1);
+\draw[->] (sj) -- (xor1);
+
+\node[state, fill=gray!20] (sj2) at (0.8, -0.8) {$v'_{j}$};
+\draw[->] (xor1) -- (sj2);
+
+\node[state] (sk) at (2.2, 0.4) {$v_{k}$};
+\node[op] (xor2) at (2.2, -0.2) {$\oplus$};
+\draw[->] (add) -- ++(0.5,0) |- (xor2);
+\draw[->] (sk) -- (xor2);
+
+\node[op] (rot) at (2.2, -0.8) {$\circlearrowleft$};
+\draw[->] (xor2) -- (rot);
+
+\node[state] (sl) at (3.5, 0.4) {$v_{l}$};
+\node[op] (add2) at (3.5, -0.2) {$+$};
+\draw[->] (rot) -- ++(0.5,0) |- (add2);
+\draw[->] (sl) -- (add2);
+
+\node[state, fill=gray!20] (si2) at (3.5, -0.8) {$v'_{i}$};
+\draw[->] (add2) -- (si2);
+\end{tikzpicture}
+\end{center}
+
+Each of the 12 lanes follows this pattern with different rotation amounts and
+cross-lane indices $j$, $k$, $l$.
+
+\medskip
+\noindent
+Exact long-key round functions (SpookyHash v2):
+\begin{algorithmic}[1]
+\Function{Mix}{$x_0,\ldots,x_{11}, v_0,\ldots,v_{11}$} \Comment{96 bytes into 12 lanes}
+    \State Let $(r_0,\ldots,r_{11}) \gets (11,32,43,31,17,28,39,57,55,54,22,46)$
+    \For{$i \in \{0,\ldots,11\}$} \Comment{All indices mod 12}
+        \State $v_i \gets v_i + x_i$
+        \State $v_{(i+2)\bmod 12} \gets v_{(i+2)\bmod 12} \oplus v_{(i+10)\bmod 12}$
+        \State $v_{(i+11)\bmod 12} \gets v_{(i+11)\bmod 12} \oplus v_i$
+        \State $v_i \gets \Rot{r_i}{v_i}$
+        \State $v_{(i+11)\bmod 12} \gets v_{(i+11)\bmod 12} + v_{(i+1)\bmod 12}$
+    \EndFor
+\EndFunction
+\phantomsection\label{fn:spooky-endpartial}%
+\Function{EndPartial}{$v_0,\ldots,v_{11}$} \Comment{Finalizer step (run 3 times)}
+    \State Let $(r_0,\ldots,r_{11}) \gets (44,15,34,21,38,33,10,13,38,53,42,54)$
+    \For{$i \in \{0,\ldots,11\}$} \Comment{All indices mod 12}
+        \State $v_{(i+11)\bmod 12} \gets v_{(i+11)\bmod 12} + v_{(i+1)\bmod 12}$
+        \State $v_{(i+2)\bmod 12} \gets v_{(i+2)\bmod 12} \oplus v_{(i+11)\bmod 12}$
+        \State $v_{(i+1)\bmod 12} \gets \Rot{r_i}{v_{(i+1)\bmod 12}}$
+    \EndFor
+\EndFunction
+\end{algorithmic}
+
+\paragraph{SpookyHash (Long Path).}
+
+\begin{algorithmic}[1]
+\State $v_0, v_3, v_6, v_9 \gets \mathit{seed}_1$
+\State $v_1, v_4, v_7, v_{10} \gets \mathit{seed}_2$
+\State $v_2, v_5, v_8, v_{11} \gets \texttt{0xdeadbeefdeadbeef}$
+\For{each block $(x_0, \ldots, x_{11})\in \ut{64}^{12}$} \Comment{Main loop: 96-byte blocks}
+    \State $\hyperref[fn:spooky-mix]{\textsc{Mix}}(x_0, \ldots, x_{11}, v_0, \ldots, v_{11})$
+\EndFor
+\State Let $(x_0, \ldots, x_{11})\in \ut{64}^{12}$ be the final padded block (zeros + length byte)
+\For{$i \in \{0,\ldots,11\}$}
+    \State $v_i \gets v_i + x_i$
+\EndFor
+\For{$r \in \{1,2,3\}$}
+    \State $\hyperref[fn:spooky-endpartial]{\textsc{EndPartial}}(v_0,\ldots,v_{11})$
+\EndFor
+\State \Return $(v_0, v_1)$ \Comment{128-bit output}
+\end{algorithmic}
+
+\paragraph{SpookyHash v1 difference.}
+SpookyHash v1 applies one extra \textsc{Mix} to the final padded block before the three \textsc{EndPartial} rounds.
+
+\subsubsection{FarmHash}
+\label{sec:farmhash}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/farmhash.cpp}{\texttt{hashes/farmhash.cpp}}, version 1.1~\cite{farmhash}.
+
+By Geoff Pike at Google, successor to CityHash. Uses Murmur3-derived constants
+and offers multiple implementation variants (na, uo, xo) optimized for different
+input sizes.
+
+\paragraph{Constants.}
+From MurmurHash3:
+\begin{align*}
+s_0 &= \texttt{0xc3a5c85c97cb3127} & s_1 &= \texttt{0xb492b66fbe98f273} \\
+s_2 &= \texttt{0x9ae16a3b2f90404f} & s_3 &= \texttt{0x9ddfea08eb382d69}
+\end{align*}
+
+\newcommand{\FHHashLenSixteen}{\hyperref[fn:farmhash-hashlen16]{\textsc{HashLen16}}}
+\newcommand{\FHWeakHashLenThirtyTwo}{\hyperref[fn:farmhash-weakhashlen32]{\textsc{WeakHashLen32WithSeeds}}}
+
+\paragraph{\textsc{HashLen16}.}
+\label{fn:farmhash-hashlen16}
+\begin{algorithmic}[1]
+\Function{HashLen16}{$u, v, m$} \Comment{128-to-64 combiner}
+    \State $t_0 \gets \ShiftMix((u \oplus v) \cdot m)$
+    \State $t_1 \gets \ShiftMix((v \oplus t_0) \cdot m)$
+    \State \Return $t_1 \cdot m$
+\EndFunction
+\end{algorithmic}
+
+\paragraph{\textsc{WeakHashLen32WithSeeds}.}
+\label{fn:farmhash-weakhashlen32}
+\begin{algorithmic}[1]
+\Function{WeakHashLen32WithSeeds}{$x_0, x_1, x_2, x_3, a, b$} \Comment{128-bit for 32 bytes}
+    \State $a \gets a + x_0$
+    \State $b \gets \Rot{43}{b + a + x_3}$ \Comment{ROTR$_{21}$}
+    \State $t \gets a$; $a \gets a + x_1 + x_2$
+    \State $b \gets b + \Rot{20}{a}$ \Comment{ROTR$_{44}$}
+    \State \Return $(a + x_3, b + t)$
+\EndFunction
+\end{algorithmic}
+
+\paragraph{FarmHash64 (Long Path).}
+Internal state: 7 words $(v_0, \ldots, v_6)$.
+
+\begin{algorithmic}[1]
+\State $v_0 \gets 81$, $v_1 \gets 81 \cdot s_1 + 113$
+\State $v_2 \gets \ShiftMix(v_1 \cdot s_2) \cdot s_2$
+\State $(v_3, v_4), (v_5, v_6) \gets (0, 0), (0, 0)$
+\For{each block $(x_0, \ldots, x_7)\in \ut{64}^8$} \Comment{64-byte blocks}
+    \State On first block: $v_0 \gets v_0 \cdot s_2 + x_0$, then continue below
+		\State $v_0 \gets \Rot{37}{v_0 + v_1 + v_3 + x_1} \cdot s_1$
+		\State $v_1 \gets \Rot{42}{v_1 + v_4 + x_6} \cdot s_1$
+		\State $v_0 \gets v_0 \oplus v_6$; $v_1 \gets v_1 + v_3 + x_5$
+		\State $v_2 \gets \Rot{33}{v_2 + v_5} \cdot s_1$
+		\State $(v_3, v_4) \gets \FHWeakHashLenThirtyTwo(x_0, x_1, x_2, x_3, v_4 \cdot s_1, v_0 + v_5)$
+		\State $(v_5, v_6) \gets \FHWeakHashLenThirtyTwo(x_4, x_5, x_6, x_7, v_2 + v_6, v_1 + x_2)$
+		\State \textbf{swap} $v_2, v_0$
+\EndFor
+\State Process final 64 bytes with length-dependent multiplier $m$
+\State \Return $\FHHashLenSixteen(v_3 + v_5, v_4 + v_6, m)$
+\end{algorithmic}
+
+\subsubsection{Rainbow}
+\label{sec:rainbow}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/rainbow.cpp}{\texttt{hashes/rainbow.cpp}}, version 3.7.1~\cite{rainbow}.
+
+By Cris Stringfellow (DOSYAGO). A stream-based hash with 256-bit internal
+state using multiply-rotate primitives.
+
+\paragraph{Constants.}
+Eight prime constants $s_0, \ldots, s_7$ with good avalanche properties
+($s_0 = 2^{64} - 59$, etc.).
+
+\phantomsection\label{fn:rainbow-mixA}%
+\phantomsection\label{fn:rainbow-mixB}%
+\begin{algorithmic}[1]
+\Function{mixA}{$v_0, v_1, v_2, v_3$} \Comment{Full state mixing}
+    \State $v_0 \gets \Rot{23}{v_0 \cdot s_0} \cdot s_1$
+    \State $v_1 \gets \Rot{29}{(v_1 \oplus v_0) \cdot s_2} \cdot s_3$
+    \State $v_2 \gets \Rot{31}{v_2 \cdot s_4} \cdot s_5$
+    \State $v_3 \gets \Rot{37}{(v_3 \oplus v_2) \cdot s_6} \cdot s_7$
+\EndFunction
+\Function{mixB}{$v_0, v_1, v_2, v_3, \mathit{seed}$} \Comment{Lighter; operates on $v_1, v_2$ only}
+    \State $v_1 \gets \Rot{23}{v_1 \cdot s_6} \cdot s_7$
+    \State $v_2 \gets \Rot{23}{(v_2 \oplus v_1 + \mathit{seed}) \cdot s_2} \cdot s_3$
+    \State \textbf{swap} $v_1, v_2$
+\EndFunction
+\State
+\State $(v_0, v_1, v_2, v_3) \gets (\mathit{seed}+n+1, \mathit{seed}+n+2, \mathit{seed}+n+3, \mathit{seed}+n+5)$
+\For{each block $(x_0, x_1)\in \ut{64}^2$} \Comment{16-byte blocks}
+    \State $v_0 \gets v_0 - x_0$; $v_1 \gets v_1 + x_0$
+    \State $v_2 \gets v_2 + x_1$; $v_3 \gets v_3 - x_1$
+    \If{block index is even}
+        \State \hyperref[fn:rainbow-mixA]{\textsc{mixA}}$(v_0, v_1, v_2, v_3)$
+    \Else
+        \State \hyperref[fn:rainbow-mixB]{\textsc{mixB}}$(v_0, v_1, v_2, v_3, \mathit{seed})$
+        \State $(v_0, v_1, v_2, v_3) \gets (v_3, v_0, v_1, v_2)$ \Comment{Rotate state right}
+    \EndIf
+\EndFor
+\State Handle remaining bytes
+\State \hyperref[fn:rainbow-mixA]{\textsc{mixA}}; \hyperref[fn:rainbow-mixB]{\textsc{mixB}}; \hyperref[fn:rainbow-mixA]{\textsc{mixA}}
+\State \Return $-(v_2 + v_3)$
+\end{algorithmic}
+
+%-----------------------------------------------------------------------------
+\subsection{PRNG-Style Hashes}
+%-----------------------------------------------------------------------------
+
+These hashes have structure resembling pseudo-random number generators,
+often using LCG-like state updates.
+
+\subsubsection{komihash}
+\label{sec:komihash}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/komihash.cpp}{\texttt{hashes/komihash.cpp}}, version 5.27~\cite{komihash}.
+
+A MUM-based hash with PRNG-inspired structure. Uses constants derived from the
+mantissa bits of $\pi$.
+
+\paragraph{Core Primitive.}\phantomsection\label{fn:kh-m128}\phantomsection\label{fn:kh-round}
+The hash uses a modified MUM that accumulates the high part:
+\begin{equation}
+\hyperref[fn:kh-m128]{\textsc{kh\_m128}}(m_1, m_2, \mathit{lo}, \mathit{hi}) : \mathit{lo} \gets \textsc{Lo}(m_1 \times m_2), \quad \mathit{hi} \gets \mathit{hi} + \textsc{Hi}(m_1 \times m_2)
+\end{equation}
+
+\noindent
+Equivalently, a single ``lane round'' can be written as:
+\begin{align}
+\hyperref[fn:kh-round]{\textsc{kh\_round}}(u, v, h) :\quad & (t_{\mathrm{lo}}, t_{\mathrm{hi}}) \gets \Mum_{128}(u, v) \\
+& \text{return } (t_{\mathrm{lo}}, h + t_{\mathrm{hi}})
+\end{align}
+where in the main loop we use $u \gets v_p \oplus x_p$ and $v \gets v_q \oplus x_q$.
+
+\paragraph{komihash (Long Path).}
+Constants $s_1, \ldots, s_8$ are derived from $\pi$.
+\begin{algorithmic}[1]
+\State $v_1 \gets s_1 \oplus (\mathit{seed} \land \texttt{0x5555...})$ \Comment{Checkerboard seed split}
+\State $v_5 \gets s_5 \oplus (\mathit{seed} \land \texttt{0xAAAA...})$
+\State $(v_1, v_5) \gets \hyperref[fn:kh-round]{\textsc{kh\_round}}(v_1, v_5, v_5)$ \Comment{Initial round for diffusion}
+\State $v_i \gets s_i \oplus v_1$ for $i \in \{2,3,4\}$; \quad $v_i \gets s_i \oplus v_5$ for $i \in \{6,7,8\}$
+\For{each block $(x_0, \ldots, x_7)\in \ut{64}^8$} \Comment{4 parallel lanes}
+    \For{$i \in \{1,\ldots,4\}$}
+        \State $(v_i, v_{i+4}) \gets \hyperref[fn:kh-round]{\textsc{kh\_round}}(v_i \oplus x_{i-1},\, v_{i+4} \oplus x_{i+3},\, v_{i+4})$
+    \EndFor
+	    \State $v_4 \gets v_4 \oplus v_7$; $v_1 \gets v_1 \oplus v_8$; $v_3 \gets v_3 \oplus v_6$; $v_2 \gets v_2 \oplus v_5$ \Comment{Cross-lane}
+\EndFor
+\For{$i \in \{6,\ldots,8\}$} \Comment{Collapse}
+    \State $v_5 \gets v_5 \oplus v_i$
+\EndFor
+\For{$i \in \{2,\ldots,4\}$}
+    \State $v_1 \gets v_1 \oplus v_i$
+\EndFor
+\State Handle remaining bytes (up to 2 more 16-byte rounds via \hyperref[fn:kh-m128]{\textsc{kh\_m128}})
+\State $v_1 \gets v_1 \oplus v_5$ \Comment{Final mixing}
+\State Apply one more \hyperref[fn:kh-round]{\textsc{kh\_round}}, then $v_1 \gets v_1 \oplus v_5$
+\State \Return $v_1$
+\end{algorithmic}
+
+\subsubsection{prvhash}
+\label{sec:prvhash}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/prvhash.cpp}{\texttt{hashes/prvhash.cpp}}, version 4.3.4~\cite{prvhash}.
+
+By Aleksey Vaneev. A PRNG-style hash that generates pseudo-random values
+during hashing. Uses checkerboard constants like a5hash.
+
+\paragraph{Core Function.}\phantomsection\label{fn:prvhash-core64}
+\begin{algorithmic}[1]
+\Function{prvhash\_core64}{$v_0, v_1, v_2$}
+    \State $v_0 \gets v_0 \cdot (v_1 \cdot 2 + 1)$
+    \State $t \gets (v_0 \gg 32) \mid (v_0 \ll 32)$ \Comment{Swap halves}
+    \State $v_2 \gets v_2 + t + \texttt{0xAAAAAAAAAAAAAAAA}$
+    \State $v_1 \gets v_1 + v_0 + \texttt{0x5555555555555555}$
+    \State $v_0 \gets v_0 \oplus v_2$
+    \State \Return $v_1 \oplus t$
+\EndFunction
+\end{algorithmic}
+
+\paragraph{prvhash64.}
+\begin{algorithmic}[1]
+\State Initialize $(v_0, v_1, v_2)$ from pre-computed constants
+\State $v_0 \gets v_0 \oplus \mathit{seed}$; $v_1 \gets v_1 \oplus \mathit{seed}$
+\For{each word $x \in \ut{64}$}
+    \State \hyperref[fn:prvhash-core64]{\textsc{prvhash\_core64}}($v_0, v_1, v_2$)
+    \State $v_0 \gets v_0 \oplus x$; $v_1 \gets v_1 \oplus x$
+\EndFor
+\State Apply 2 more core rounds
+\State \Return \hyperref[fn:prvhash-core64]{\textsc{prvhash\_core64}} output
+\end{algorithmic}
+
+%-----------------------------------------------------------------------------
+\subsection{Compact and Embedded Hashes}
+%-----------------------------------------------------------------------------
+
+These hashes prioritize small code size and simplicity, suitable for
+resource-constrained environments.
+
+\subsubsection{ChibiHash}
+\label{sec:chibihash}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/chibihash.cpp}{\texttt{hashes/chibihash.cpp}}, version 2~\cite{chibihash}.
+
+A compact, high-quality 64-bit hash by NRK with small code footprint for embedded use.
+Uses a single 64-bit constant (digits of $e$) and truncated 64$\times$64$\to$64 multiplies
+(not MUM). Cross-lane rotation feeding prevents lane independence.
+
+\begin{algorithmic}[1]
+\State $s_0 \gets \texttt{0x2B7E151628AED2A7}$ \Comment{Digits of $e$}
+\State $t \gets \Rot{15}{\mathit{seed} - s_0} + \Rot{47}{\mathit{seed} - s_0}$
+\State $v_0, v_1, v_2, v_3 \gets [\mathit{seed},\; \mathit{seed} + s_0,\; t,\; t + s_0^2 \oplus s_0]$
+\For{each block $(x_0, \ldots, x_3)\in \ut{64}^4$} \Comment{32-byte blocks}
+    \For{$i \in \{0,\ldots,3\}$}
+        \State $v_i \gets (x_i + v_i) \cdot s_0$
+        \State $v_{(i+1) \bmod 4} \gets v_{(i+1) \bmod 4} + \Rot{27}{x_i}$
+    \EndFor
+\EndFor
+\State Handle remaining bytes
+\State $v_0 \gets v_0 + (\Rot{31}{v_2 \cdot s_0} \oplus (v_2 \gg 31))$
+\State $v_1 \gets v_1 + (\Rot{31}{v_3 \cdot s_0} \oplus (v_3 \gg 31))$
+\State $v_0 \gets v_0 \cdot s_0$; $v_0 \gets v_0 \oplus (v_0 \gg 31)$
+\State $v_1 \gets v_1 + v_0$
+\State $t \gets n \cdot s_0$; $t \gets t \oplus \Rot{29}{t}$; $t \gets t + \mathit{seed}$; $t \gets t \oplus v_1$
+\State $t \gets t \oplus \Rot{15}{t} \oplus \Rot{42}{t}$; $t \gets t \cdot s_0$
+\State \Return $t \oplus \Rot{13}{t} \oplus \Rot{31}{t}$
+\end{algorithmic}
+
+\subsubsection{XMSX}
+\label{sec:xmsx}
+
+Source: \href{https://gitlab.com/fwojcik/smhasher3/-/blob/main/hashes/xmsx.cpp}{\texttt{hashes/xmsx.cpp}}.
+
+By Dmitrii Lebed. A minimal 32-bit hash for microcontrollers using XOR-Multiply-Shift-XOR
+rounds. Uses 32$\times$32$\to$64 multiply (widely available in HW). Faster than software
+CRC32 on 32-bit CPUs.
+
+\paragraph{Round Function.}\phantomsection\label{fn:xmsx32-round}
+\begin{equation}
+\textsc{xmsx32\_round}(v, x) = ((v \oplus x) \cdot s_0) \oplus (((v \oplus x) \cdot s_0) \gg 32)
+\end{equation}
+where $s_0 = \texttt{0xcdb32970830fcaa1}$.
+
+\paragraph{XMSX32 Algorithm.}
+\begin{algorithmic}[1]
+\State $v \gets (\mathit{seed} \ll 32) \mid \mathit{seed}$
+\State $v \gets \hyperref[fn:xmsx32-round]{\textsc{xmsx32\_round}}(v, n)$
+\For{each word $x \in \ut{32}$}
+    \State $v \gets \hyperref[fn:xmsx32-round]{\textsc{xmsx32\_round}}(v, x)$
+\EndFor
+\State \Return $\hyperref[fn:xmsx32-round]{\textsc{xmsx32\_round}}(v, v \gg 47)$
+\end{algorithmic}

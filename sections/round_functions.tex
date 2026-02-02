@@ -1,0 +1,129 @@
+%=============================================================================
+\section{Round Functions and Combiners}
+%=============================================================================
+
+This section details specific mixing functions used by hash families.
+For the core primitives (MUM, ARX, etc.), see Section~\ref{sec:primitives}.
+
+\subsection{The MUM Primitive}
+\label{sec:mum}
+
+\begin{center}
+\begin{tikzpicture}[
+    >=Latex,
+    input/.style={rectangle, draw, minimum width=1.2cm, minimum height=0.6cm},
+    output/.style={rectangle, draw, minimum width=2.4cm, minimum height=0.6cm, fill=gray!15},
+    op/.style={circle, draw, minimum size=0.6cm, font=\small}
+]
+% Inputs
+\node[input] (a) at (0,0) {$a$};
+\node[input] (b) at (2,0) {$b$};
+
+% Multiply
+\node[op] (mul) at (1,-1) {$\times$};
+\draw[->] (a) -- (mul);
+\draw[->] (b) -- (mul);
+
+% 128-bit result
+\node[output] (hi) at (0,-2.3) {Hi$(a \times b)$};
+\node[output] (lo) at (2.4,-2.3) {Lo$(a \times b)$};
+\draw[->] (mul) -- ++(0,-0.5) -| (hi);
+\draw[->] (mul) -- ++(0,-0.5) -| (lo);
+
+% XOR fold
+\node[op] (xor) at (1.2,-3.5) {$\oplus$};
+\draw[->] (hi) -- (xor);
+\draw[->] (lo) -- (xor);
+
+% Output
+\node[input, fill=blue!10] (out) at (1.2,-4.5) {result};
+\draw[->] (xor) -- (out);
+
+\node[anchor=west, font=\footnotesize] at (3.5,-2.3) {128-bit product};
+\node[anchor=west, font=\footnotesize] at (3.5,-4.5) {64-bit output};
+\end{tikzpicture}
+\end{center}
+
+We define three variants used throughout this survey:
+
+\begin{description}
+\item[$\Mum(a,\,b)$] \textbf{Standard (folded):} Returns $\textsc{Lo}(a \times b) \oplus \textsc{Hi}(a \times b)$.
+Used by wyhash (\texttt{\_wymix}), rapidhash (\texttt{rapid\_mix}), XXH3.
+
+\item[$\Mum^*(a,b)$] \textbf{Protected (folded):} XORs the original inputs back into the product
+before folding, preventing degenerate cases (e.g.\ $a{=}0$) from collapsing state:
+\begin{equation}
+\Mum^*(a, b) = a \oplus b \oplus \textsc{Lo}(a \times b) \oplus \textsc{Hi}(a \times b)
+\end{equation}
+Used by wyhash-strict, rapidhash-protected, MuseAir.
+
+\item[$\Mum_{128}(a,b)$] \textbf{Full product:} Returns the pair $(\textsc{Lo}(a \times b),\, \textsc{Hi}(a \times b))$
+without folding. Used in finalizations where both halves update separate state variables.
+\item[$\Mum_{128}^*(a,b)$] \textbf{Protected full product:} Returns the pair
+$(a \oplus \textsc{Lo}(a \times b),\, b \oplus \textsc{Hi}(a \times b))$.
+Folding this pair with XOR gives $\Mum^*(a,b)$.
+\end{description}
+
+\subsection{Round Functions}
+\label{sec:round}
+
+Many hashes use a \emph{round function} that mixes input into an accumulator.
+The xxHash round functions are defined in Section~\ref{sec:xxhash-round}.
+
+\subsection{Xorshift}
+\label{sec:xorshift}
+
+The xorshift primitive XORs a value with a shifted copy of itself:
+\begin{equation}
+\textsc{Xorshift}_r(v) = v \oplus (v \gg r)
+\end{equation}
+
+\paragraph{Permutation proof.}
+$\textsc{Xorshift}_r$ is a bijection (permutation) for any $0 < r < w$ where $w$ is the word size.
+To see this, note that the top $r$ bits of $v$ are unchanged, and each subsequent bit can be
+recovered by XORing with the already-recovered bit $r$ positions above it. Equivalently,
+applying $\textsc{Xorshift}_r$ a total of $\lceil w/r \rceil$ times yields the identity.
+
+\subsection{ShiftMix}
+\label{sec:shiftmix}
+
+A specific xorshift used by CityHash and FarmHash:
+\begin{equation}
+\textsc{ShiftMix}(v) = \Xorshift{47}(v) = v \oplus (v \gg 47)
+\end{equation}
+This diffuses high bits into the low 17 bits of a 64-bit value.
+
+\subsection{HashLen16 (CityHash)}
+\label{sec:hashlen16}
+
+CityHash's core 128-to-64 bit reducer, inspired by MurmurHash:
+
+\begin{align}
+a &\gets (u \oplus v) \cdot \mathit{mul} \\
+a &\gets \ShiftMix(a) \\
+b &\gets (v \oplus a) \cdot \mathit{mul} \\
+b &\gets \ShiftMix(b) \\
+\textsc{HashLen16}(u, v, \mathit{mul}) &\gets b \cdot \mathit{mul}
+\end{align}
+where $\mathit{mul}$ is an odd 64-bit multiplier (often a fixed constant, or $k_2 + 2n$ for length-dependent mixing).
+When the multiplier is the fixed default, we may omit it and write $\textsc{HashLen16}(u, v)$.
+This resembles \Mum{} but applies the shifts between multiplications rather than using 128-bit product folding.
+
+\subsection{Finalization Mixers}
+\label{sec:fmix}
+
+All finalization mixers follow a common pattern: alternating xorshift and multiply operations.
+The general form is:
+\begin{align}
+h &\gets \Xorshift{r_1}(h) \\
+h &\gets h \cdot c_1 \\
+h &\gets \Xorshift{r_2}(h) \\
+h &\gets h \cdot c_2 \\
+\textsc{fmix}(h) &\gets \Xorshift{r_3}(h)
+\end{align}
+
+Different hashes choose different shift amounts $(r_1, r_2, r_3)$ and multiplier constants $(c_1, c_2)$
+based on avalanche analysis. Typical 32-bit shifts: $(16, 13, 16)$. Typical 64-bit shifts: $(33, 33, 33)$ or $(33, 29, 32)$.
+
+This is a bijection: each $\Xorshift{r}$ is a permutation (see Section~\ref{sec:xorshift}),
+and multiplication by an odd constant is a permutation mod $2^w$.
